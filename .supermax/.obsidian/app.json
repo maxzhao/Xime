@@ -1,0 +1,8 @@
+{
+  "vaultName": "smx-knowledge::xime::712df88d",
+  "managedBy": "project-admin",
+  "note": "Commit stable shared config only. Local workspace/cache state must stay ignored.",
+  "userIgnoreFilters": [
+    "upload/"
+  ]
+}

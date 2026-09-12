@@ -1,0 +1,17 @@
+name: smx-knowledge::xime::712df88d
+schema_version: 1
+supermax_schema_version: 1
+project_root: /home/maxzhao/tools/Xime
+vault_root: .supermax
+created: 2026-09-12T21:02:53+08:00
+updated: 2026-09-12T21:02:53+08:00
+status: active
+index_mode: manual-curated
+source_layer: root
+wiki_root: wiki
+sync_mode: syncthing
+syncthing_folder_id: smx-knowledge-xime-712df88d
+notes:
+  - project-root-vault
+  - explicit-vault-target-required
+  - graph-ops-must-not-fallback-to-default-vault
