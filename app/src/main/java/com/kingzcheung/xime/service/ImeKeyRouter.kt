@@ -24,6 +24,9 @@ import kotlinx.coroutines.withContext
  */
 internal class ImeKeyRouter(private val service: XimeInputMethodService) {
 
+    /** 在 key-processing 线程维护：按下被 Rime 消费的修饰键不应再回送目标应用。 */
+    private val consumedModifierKeys = mutableSetOf<Int>()
+
     /**
      * 候选词变换（hotPath 插件能力）+ 发送 UI 更新。
      * 必须在 key-processing 线程调用：同步等插件至多 15ms；
@@ -40,6 +43,64 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                 transformed?.actions ?: emptyList()
             )
             if (afterUpdate != null) afterUpdate()
+        }
+    }
+
+    /**
+     * 将实体修饰键事件按顺序交给 Rime。
+     * ascii_composer 通过“按下后短时间内释放，且期间没有其他按键”识别单击 Shift。
+     */
+    internal fun handleHardwareModifierKey(
+        keyCode: Int,
+        mask: Int,
+        isRelease: Boolean,
+        originalEvent: KeyEvent,
+    ) {
+        postRimeJob {
+            val eventMask = mask or if (isRelease) RIME_RELEASE_MASK else 0
+            val result = service.rimeEngine.processKeyAndGetResult(keyCode, eventMask)
+            if (result.committedText.isNotEmpty()) {
+                withContext(Dispatchers.Main) { service.commitText(result.committedText) }
+            }
+            sendTransformedResult(result)
+
+            val consumed = if (isRelease) {
+                consumedModifierKeys.remove(keyCode) || result.processed
+            } else {
+                result.processed.also { if (it) consumedModifierKeys.add(keyCode) }
+            }
+            // Rime 未消费时回送目标编辑器，保留应用侧 Ctrl/Alt/Meta 快捷键与系统锁定键。
+            if (!consumed) {
+                withContext(Dispatchers.Main) { service.forwardHardwareKeyEvent(originalEvent) }
+            }
+        }
+    }
+
+    /**
+     * 将实体键直接交给 Rime，保留 Ctrl/Alt/Meta/Shift 组合和特殊键语义。
+     * 未被 Rime 消费的特殊键回送编辑器；可打印键仍由既有文本路径兜底。
+     */
+    internal fun handleHardwareRimeKey(
+        keyCode: Int,
+        mask: Int,
+        fallbackKey: String?,
+        originalEvent: KeyEvent,
+        forwardIfUnhandled: Boolean,
+    ) {
+        postRimeJob {
+            val result = service.rimeEngine.processKeyAndGetResult(keyCode, mask)
+            if (result.processed) {
+                if (result.committedText.isNotEmpty()) {
+                    withContext(Dispatchers.Main) { service.commitText(result.committedText) }
+                }
+                sendTransformedResult(result)
+            } else if (fallbackKey != null) {
+                handleKeyPress(fallbackKey, originalEvent.isShiftPressed)
+            } else if (forwardIfUnhandled) {
+                withContext(Dispatchers.Main) {
+                    service.forwardHardwareKeyPress(originalEvent)
+                }
+            }
         }
     }
 

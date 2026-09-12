@@ -234,6 +234,8 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
     private val bottomInsetPxState = mutableStateOf(0)
     private var hasHardwareKeyboard = false
+    /** 防止把未被 Rime 消费、回送编辑器的实体键再次路由回输入法。 */
+    private var forwardingHardwareKey = false
     private var floatingWinX = 100
     private var floatingWinY = 300
     
@@ -1513,49 +1515,123 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val e = event ?: return super.onKeyDown(keyCode, event)
-        if (hasHardwareKeyboard && candidateState.value.candidates.isNotEmpty()) {
+        if (forwardingHardwareKey) return super.onKeyDown(keyCode, event)
+
+        val modifierKeyCode = keyCodeToRimeModifierKeyCode(keyCode)
+        if (modifierKeyCode != null) {
+            // ascii_composer 在修饰键释放时判断单击 Shift/Ctrl/Alt/Super；
+            // 按下与释放必须按序送入 Rime。
+            keyRouter.handleHardwareModifierKey(
+                modifierKeyCode,
+                androidMetaStateToRimeMask(e.metaState),
+                isRelease = false,
+                originalEvent = e,
+            )
+            return true
+        }
+
+        val mask = androidMetaStateToRimeMask(e.metaState)
+        val hasChordModifier = hasRimeChordModifier(mask)
+        val hasCommandModifier = hasRimeCommandModifier(mask)
+        val candidates = candidateState.value.candidates
+        if (!hasChordModifier && candidates.isNotEmpty()) {
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (candidateState.value.hasNextPage) { keyRouter.pageDown(); highlightIndex.intValue = 0; return true }
+                    if (candidateState.value.hasNextPage) {
+                        keyRouter.pageDown()
+                        highlightIndex.intValue = 0
+                        return true
+                    }
                 }
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (candidateState.value.hasPrevPage) { keyRouter.pageUp(); highlightIndex.intValue = 0; return true }
+                    if (candidateState.value.hasPrevPage) {
+                        keyRouter.pageUp()
+                        highlightIndex.intValue = 0
+                        return true
+                    }
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    val maxIdx = candidateState.value.candidates.size - 1
-                    highlightIndex.intValue = (highlightIndex.intValue + 1).coerceAtMost(maxIdx)
+                    highlightIndex.intValue = (highlightIndex.intValue + 1).coerceAtMost(candidates.lastIndex)
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
                     highlightIndex.intValue = (highlightIndex.intValue - 1).coerceAtLeast(0)
                     return true
                 }
-                KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_ENTER -> {
-                    if (candidateState.value.candidates.isNotEmpty()) {
-                        keyRouter.selectCandidate(highlightIndex.intValue)
-                        highlightIndex.intValue = 0
-                        return true
-                    }
+                KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
+                KeyEvent.KEYCODE_DPAD_CENTER -> {
+                    keyRouter.selectCandidate(highlightIndex.intValue)
+                    highlightIndex.intValue = 0
+                    return true
                 }
-                KeyEvent.KEYCODE_1 -> { keyRouter.selectCandidate(0); highlightIndex.intValue = 0; return true }
-                KeyEvent.KEYCODE_2 -> { keyRouter.selectCandidate(1); highlightIndex.intValue = 0; return true }
-                KeyEvent.KEYCODE_3 -> { keyRouter.selectCandidate(2); highlightIndex.intValue = 0; return true }
-                KeyEvent.KEYCODE_4 -> { keyRouter.selectCandidate(3); highlightIndex.intValue = 0; return true }
-                KeyEvent.KEYCODE_5 -> { keyRouter.selectCandidate(4); highlightIndex.intValue = 0; return true }
-                KeyEvent.KEYCODE_6 -> { keyRouter.selectCandidate(5); highlightIndex.intValue = 0; return true }
-                KeyEvent.KEYCODE_7 -> { keyRouter.selectCandidate(6); highlightIndex.intValue = 0; return true }
-                KeyEvent.KEYCODE_8 -> { keyRouter.selectCandidate(7); highlightIndex.intValue = 0; return true }
-                KeyEvent.KEYCODE_9 -> { keyRouter.selectCandidate(8); highlightIndex.intValue = 0; return true }
-                KeyEvent.KEYCODE_0 -> { keyRouter.selectCandidate(9); highlightIndex.intValue = 0; return true }
+            }
+            candidateIndexForHardwareKey(keyCode)?.let { index ->
+                if (index < candidates.size) {
+                    keyRouter.selectCandidate(index)
+                    highlightIndex.intValue = 0
+                    return true
+                }
             }
         }
-        val isShifted = e.isShiftPressed
-        val key = keyCodeToKey(keyCode, isShifted)
+
+        val rimeKeyCode = keyCodeToRimeKeyCode(keyCode)
+        val specialKey = isRimeSpecialKey(keyCode)
+        val shiftSpace = mask and RIME_SHIFT_MASK != 0 && keyCode == KeyEvent.KEYCODE_SPACE
+        if (rimeKeyCode != null && (hasCommandModifier || specialKey || shiftSpace)) {
+            // 未被 Rime 绑定消费的 Ctrl/Alt/Meta 组合必须交还目标应用，不能降级成普通字符；
+            // Shift+Space 则保留输入法原有的空格兜底。
+            val fallbackKey = if (hasCommandModifier || specialKey) null else keyEventToKey(e)
+            keyRouter.handleHardwareRimeKey(
+                keyCode = rimeKeyCode,
+                mask = mask,
+                fallbackKey = fallbackKey,
+                originalEvent = e,
+                forwardIfUnhandled = hasCommandModifier || specialKey,
+            )
+            return true
+        }
+
+        val key = keyEventToKey(e)
         if (key != null) {
-            keyRouter.handleKeyPress(key, isShifted)
+            keyRouter.handleKeyPress(key, e.isShiftPressed)
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        val e = event ?: return super.onKeyUp(keyCode, event)
+        if (forwardingHardwareKey) return super.onKeyUp(keyCode, event)
+        val modifierKeyCode = keyCodeToRimeModifierKeyCode(keyCode)
+        if (modifierKeyCode != null) {
+            keyRouter.handleHardwareModifierKey(
+                modifierKeyCode,
+                androidMetaStateToRimeMask(e.metaState),
+                isRelease = true,
+                originalEvent = e,
+            )
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    internal fun forwardHardwareKeyEvent(event: KeyEvent) {
+        forwardingHardwareKey = true
+        try {
+            currentInputConnection?.sendKeyEvent(event)
+        } finally {
+            forwardingHardwareKey = false
+        }
+    }
+
+    internal fun forwardHardwareKeyPress(event: KeyEvent) {
+        forwardingHardwareKey = true
+        try {
+            currentInputConnection?.sendKeyEvent(event)
+            currentInputConnection?.sendKeyEvent(KeyEvent.changeAction(event, KeyEvent.ACTION_UP))
+        } finally {
+            forwardingHardwareKey = false
+        }
     }
 
     override fun sendKeyEvent(keyCode: Int) {
