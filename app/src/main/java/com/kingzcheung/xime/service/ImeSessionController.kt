@@ -4,6 +4,7 @@ import com.kingzcheung.xime.keyboard.HANDWRITING_SCHEMA_ID
 import com.kingzcheung.xime.rime.RimeEngine
 import com.kingzcheung.xime.rime.T9InputController
 import com.kingzcheung.xime.rime.buildT9DisplayState
+import com.kingzcheung.xime.settings.KeysConfigHelper
 import com.kingzcheung.xime.settings.SchemaManager
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.ui.keyboard.isT9Schema
@@ -38,9 +39,9 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             val filtered = candidatesWithComments.filterNot { candidate ->
                 candidate.text.any { it.code in 0x4E00..0x9FFF }
             }
-            filtered.map { it.text } to filtered.map { it.comment }
+            filtered.map { it.displayText } to filtered.map { it.comment }
         } else {
-            candidatesWithComments.map { it.text } to candidatesWithComments.map { it.comment }
+            candidatesWithComments.map { it.displayText } to candidatesWithComments.map { it.comment }
         }
 
         val isT9Schema = isT9Schema(service.uiState.value.currentSchemaId)
@@ -191,9 +192,9 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             val filtered = candidatesWithComments.filterNot { candidate ->
                 candidate.text.any { it.code in 0x4E00..0x9FFF }
             }
-            filtered.map { it.text } to filtered.map { it.comment }
+            filtered.map { it.displayText } to filtered.map { it.comment }
         } else {
-            candidatesWithComments.map { it.text } to candidatesWithComments.map { it.comment }
+            candidatesWithComments.map { it.displayText } to candidatesWithComments.map { it.comment }
         }
 
         // 非 T9 方案（如双拼）使用原始输入文本显示，
@@ -395,9 +396,17 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         val defs = SchemaManager.getSchemaSwitches(service, schemaId)
         for (def in defs) {
             if (def.name.isNotEmpty()) {
-                service.rimeEngine.setOption(def.name, service.rimeEngine.getUserConfigBool("var/option/${def.name}"))
+                val persisted = service.rimeEngine.getUserConfigBool("var/option/${def.name}")
+                val effective = persisted ?: when {
+                    schemaId == "wubi86_pinyin" && def.name == "ascii_mode" ->
+                        KeysConfigHelper.loadWubiPinyinDefaultAsciiMode(service)
+                    else -> null
+                }
+                if (effective != null) service.rimeEngine.setOption(def.name, effective)
             } else if (def.options.isNotEmpty()) {
-                val activeIndex = def.options.indexOfFirst { service.rimeEngine.getUserConfigBool("var/option/$it") }
+                val activeIndex = def.options.indexOfFirst {
+                    service.rimeEngine.getUserConfigBool("var/option/$it") == true
+                }
                 if (activeIndex >= 0) {
                     def.options.forEachIndexed { i, opt -> service.rimeEngine.setOption(opt, i == activeIndex) }
                 }

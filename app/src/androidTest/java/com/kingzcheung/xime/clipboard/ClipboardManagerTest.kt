@@ -353,8 +353,8 @@ class ClipboardManagerTest {
     @Test
     fun migrateLegacyPrefsPreservesData() {
         val items = listOf(
-            ClipboardItem(1L, "Test:::with|||special", 1000L, true, false),
-            ClipboardItem(2L, "Normal text", 2000L, false, true)
+            ClipboardItem(id = 1L, text = "Test:::with|||special", timestamp = 1000L, isPinned = true),
+            ClipboardItem(id = 2L, text = "Normal text", timestamp = 2000L, isQuickSend = true)
         )
 
         val prefs = context.getSharedPreferences("clipboard_prefs", Context.MODE_PRIVATE)

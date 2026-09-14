@@ -42,17 +42,12 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
                     associationCandidates = emptyList()
                 )
             }
-        } else if (candState.isComposing) {
-            if (candState.candidates.isNotEmpty()) {
-                service.keyRouter.selectCandidateAsync(0)
-            } else {
-                val input = candState.inputText
-                if (input.isNotEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        service.commitText(input)
-                    }
-                    service.rimeEngine.clearComposition()
-                }
+        } else {
+            // 软键盘显式切换也以 Rime 当前 raw input 为权威，避免 UI 快照尚未传播时漏提交。
+            val input = service.rimeEngine.getInput()
+            if (input.isNotEmpty()) {
+                withContext(Dispatchers.Main) { service.commitText(input) }
+                service.rimeEngine.clearComposition()
             }
         }
         // 由 ImeKeyRouter 在 key-processing 线程调用：toggleAsciiMode 阻塞等待 rimeLock
@@ -185,31 +180,23 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
             "copy" -> ic.performContextMenuAction(android.R.id.copy)
             "cut" -> ic.performContextMenuAction(android.R.id.cut)
             "paste" -> ic.performContextMenuAction(android.R.id.paste)
-            "home" -> ic.setSelection(0, 0)
-            "end" -> {
+            "home" -> service.keyRouter.handleSoftRimeEditingKey(0xff50) { ic.setSelection(0, 0) }
+            "end" -> service.keyRouter.handleSoftRimeEditingKey(0xff57) {
                 val before = ic.getTextBeforeCursor(XimeInputMethodService.SAFE_TEXT_LIMIT, 0) ?: ""
                 val after = ic.getTextAfterCursor(XimeInputMethodService.SAFE_TEXT_LIMIT, 0) ?: ""
                 ic.setSelection(before.length + after.length, before.length + after.length)
             }
-            "arrow_up" -> {
-                val t = SystemClock.uptimeMillis()
-                ic.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP, 0))
-                ic.sendKeyEvent(KeyEvent(t, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_UP, 0))
+            "arrow_up" -> service.keyRouter.handleSoftRimeEditingKey(0xff52) {
+                sendHostEditingKey(ic, KeyEvent.KEYCODE_DPAD_UP)
             }
-            "arrow_down" -> {
-                val t = SystemClock.uptimeMillis()
-                ic.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN, 0))
-                ic.sendKeyEvent(KeyEvent(t, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_DOWN, 0))
+            "arrow_down" -> service.keyRouter.handleSoftRimeEditingKey(0xff54) {
+                sendHostEditingKey(ic, KeyEvent.KEYCODE_DPAD_DOWN)
             }
-            "arrow_left" -> {
-                val t = SystemClock.uptimeMillis()
-                ic.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, 0))
-                ic.sendKeyEvent(KeyEvent(t, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_LEFT, 0))
+            "arrow_left" -> service.keyRouter.handleSoftRimeEditingKey(0xff51) {
+                sendHostEditingKey(ic, KeyEvent.KEYCODE_DPAD_LEFT)
             }
-            "arrow_right" -> {
-                val t = SystemClock.uptimeMillis()
-                ic.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, 0))
-                ic.sendKeyEvent(KeyEvent(t, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT, 0))
+            "arrow_right" -> service.keyRouter.handleSoftRimeEditingKey(0xff53) {
+                sendHostEditingKey(ic, KeyEvent.KEYCODE_DPAD_RIGHT)
             }
 
             "select_begin" -> {
@@ -245,6 +232,12 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
                 }
             }
         }
+    }
+
+    private fun sendHostEditingKey(ic: InputConnection, keyCode: Int) {
+        val t = SystemClock.uptimeMillis()
+        ic.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, keyCode, 0))
+        ic.sendKeyEvent(KeyEvent(t, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, 0))
     }
 
     private fun extendSelection(ic: InputConnection, direction: Int) {
@@ -321,7 +314,9 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
                 Toast.makeText(service, "方案未部署，请在方案管理中部署后再试", Toast.LENGTH_SHORT).show()
                 return
             }
-            if (!service.rimeEngine.isAsciiMode()) {
+            service.sessionController.restorePersistedSchemaOptions()
+            if (!service.rimeEngine.isAsciiMode() &&
+                service.rimeEngine.getUserConfigBool("var/option/ascii_punct") == null) {
                 service.rimeEngine.setOption("ascii_punct", false)
             }
             service.sessionController.updateSchemaName()

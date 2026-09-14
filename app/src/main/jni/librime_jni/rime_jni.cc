@@ -3,16 +3,29 @@
 
 #include <rime_api.h>
 #include <rime/setup.h>
+#include <rime/candidate.h>
+#include <rime/context.h>
+#include <rime/dict/dictionary.h>
 #include <rime/dict/reverse_lookup_dictionary.h>
+#include <rime/gear/translator_commons.h>
+#include <rime/menu.h>
 #include <rime/service.h>
 #include <rime/schema.h>
+#include <rime/segmentation.h>
+#include <rime/ticket.h>
 #include "t9_processor.h"
 #include "t9_patch_utils.h"
 #include "t9_digit_userdict.h"
+#include "wubi_source_order.h"
 #include <jni.h>
 #include <android/log.h>
+#include <algorithm>
+#include <cctype>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <unistd.h>  // for usleep
 #include <cstring>   // for strcmp
@@ -53,12 +66,19 @@ static void declare_librime_module_dependencies() {
   rime_require_module_t9();
 }
 
+struct CandidateSnapshot {
+    std::string text;
+    std::string comment;
+    std::string sourceType;
+    std::string fullWubiCode;
+};
+
 struct ProcessResult {
     bool processed = false;
     std::string committedText;
     std::string inputText;
     std::string preeditText;
-    std::vector<std::pair<std::string, std::string>> candidates;
+    std::vector<CandidateSnapshot> candidates;
     bool isAsciiMode = false;
     bool hasNextPage = false;
     bool hasPrevPage = false;
@@ -72,7 +92,7 @@ struct CompositionResult {
     std::string input;
     std::string preedit;
     std::string committedText;
-    std::vector<std::pair<std::string, std::string>> candidates;
+    std::vector<CandidateSnapshot> candidates;
     bool isAsciiMode = false;
     bool hasNextPage = false;
     bool hasPrevPage = false;
@@ -199,7 +219,12 @@ public:
             return result;
         }
 
+        // `wubi86_pinyin` 的五码顶字必须在第五码进入旧 composition 之前执行。
+        maybeCommitWubiBeforeFifthKey(keycode, mask);
         result.processed = rime->process_key(session_id_, keycode, mask);
+        if (result.processed) {
+            maybeCommitUniqueFourCodeWubi(keycode, mask);
+        }
         readCurrentState(result);
         return result;
     }
@@ -216,6 +241,130 @@ public:
         }
         readCurrentState(result);
         return result;
+    }
+
+    rime::Context* currentContext() const {
+        if (!session_id_) return nullptr;
+        auto session = rime::Service::instance().GetSession(
+            static_cast<rime::SessionId>(session_id_));
+        return session ? session->context() : nullptr;
+    }
+
+    bool isWubiPinyinSchema() const {
+        if (!rime || !session_id_) return false;
+        char schema_id[256] = {0};
+        return rime->get_current_schema(session_id_, schema_id, sizeof(schema_id)) &&
+            std::strcmp(schema_id, "wubi86_pinyin") == 0;
+    }
+
+    static bool isUnmodifiedAsciiLetter(int keycode, int mask) {
+        constexpr int kDisallowedMask = (1 << 2) | (1 << 3) | (1 << 26) | (1 << 30);
+        return keycode >= 'a' && keycode <= 'z' && (mask & kDisallowedMask) == 0;
+    }
+
+    static bool isFourLetterInput(const std::string& input) {
+        return input.size() == 4 && std::all_of(input.begin(), input.end(), [](unsigned char ch) {
+            return ch >= 'a' && ch <= 'z';
+        });
+    }
+
+    static bool isExactWubiCandidate(const std::shared_ptr<rime::Candidate>& candidate) {
+        if (!candidate) return false;
+        auto genuine = rime::Candidate::GetGenuineCandidate(candidate);
+        if (!genuine) return false;
+        const std::string& type = genuine->type();
+        return (type == "table" || type == "user_table") &&
+            genuine->end() >= genuine->start() &&
+            genuine->end() - genuine->start() == 4;
+    }
+
+    std::shared_ptr<rime::Candidate> currentCandidateAt(size_t absolute_index) const {
+        auto* context = currentContext();
+        if (!context || context->composition().empty()) return nullptr;
+        const auto& segment = context->composition().back();
+        return segment.menu ? segment.menu->GetCandidateAt(absolute_index) : nullptr;
+    }
+
+    void maybeCommitWubiBeforeFifthKey(int keycode, int mask) {
+        if (!isWubiPinyinSchema() || !isUnmodifiedAsciiLetter(keycode, mask)) return;
+        auto* context = currentContext();
+        if (!context || context->caret_pos() != context->input().size() ||
+            !isFourLetterInput(context->input()) || context->composition().empty()) return;
+        auto first = context->composition().back().GetCandidateAt(0);
+        if (!isExactWubiCandidate(first)) return;
+        context->Select(0);
+        context->Commit();
+    }
+
+    void maybeCommitUniqueFourCodeWubi(int keycode, int mask) {
+        if (!isWubiPinyinSchema() || !isUnmodifiedAsciiLetter(keycode, mask)) return;
+        auto* context = currentContext();
+        if (!context || context->caret_pos() != context->input().size() ||
+            !isFourLetterInput(context->input()) || context->composition().empty()) return;
+        auto& segment = context->composition().back();
+        if (!segment.menu) return;
+
+        // Count the filtered/deduplicated active-segment menu itself. This includes
+        // user_table candidates and stops as soon as uniqueness is disproved.
+        size_t exact_count = 0;
+        size_t exact_index = 0;
+        for (size_t index = 0;; ++index) {
+            auto candidate = segment.menu->GetCandidateAt(index);
+            if (!candidate) break;
+            if (isExactWubiCandidate(candidate)) {
+                exact_index = index;
+                if (++exact_count == 2) return;
+            }
+        }
+        if (exact_count == 1 && context->Select(exact_index)) {
+            context->Commit();
+        }
+    }
+
+    bool ensureWubiSourceCodeCache() {
+        if (wubi_source_codes_loaded_) return !wubi_source_codes_.empty();
+        wubi_source_codes_loaded_ = true;
+        // Runtime data may be user-managed; prefer its source dictionaries, then
+        // fall back to the bundled/shared copies. Main-table order wins over imports.
+        const std::vector<std::string> roots = {user_data_dir_, shared_data_dir_};
+        const std::vector<std::string> dictionaries = {
+            "wubi86.dict.yaml", "wubi86_extra.dict.yaml"};
+        for (const auto& dictionary : dictionaries) {
+            bool loaded = false;
+            for (const auto& root : roots) {
+                if (root.empty()) continue;
+                std::ifstream input(root + "/" + dictionary);
+                if (!input) continue;
+                xime::LoadWubiSourceCodes(input, &wubi_source_codes_);
+                loaded = true;
+                break;
+            }
+            if (!loaded) {
+                LOGD("Wubi source dictionary unavailable: %s", dictionary.c_str());
+            }
+        }
+        return !wubi_source_codes_.empty();
+    }
+
+    std::string longestWubiCode(const std::string& text) {
+        if (text.empty() || !ensureWubiSourceCodeCache()) return "";
+        const auto code = wubi_source_codes_.find(text);
+        return code == wubi_source_codes_.end() ? "" : code->second;
+    }
+
+    CandidateSnapshot candidateSnapshot(size_t absolute_index,
+                                        const char* fallback_text,
+                                        const char* fallback_comment) {
+        CandidateSnapshot snapshot;
+        snapshot.text = fallback_text ? fallback_text : "";
+        snapshot.comment = fallback_comment ? fallback_comment : "";
+        auto candidate = currentCandidateAt(absolute_index);
+        auto genuine = candidate ? rime::Candidate::GetGenuineCandidate(candidate) : nullptr;
+        if (genuine) snapshot.sourceType = genuine->type();
+        if (isWubiPinyinSchema() && snapshot.sourceType == "reverse_lookup") {
+            snapshot.fullWubiCode = longestWubiCode(snapshot.text);
+        }
+        return snapshot;
     }
 
     void readCurrentState(ProcessResult& result) {
@@ -237,10 +386,9 @@ public:
                 const char* text = context.menu.candidates[i].text;
                 const char* comment = context.menu.candidates[i].comment;
                 LOGI("Candidate[%d]: text='%s' comment='%s'", i, text ? text : "", comment ? comment : "");
-                result.candidates.push_back(std::make_pair(
-                    text ? text : "",
-                    comment ? comment : ""
-                ));
+                const size_t absolute_index =
+                    static_cast<size_t>(context.menu.page_no * context.menu.page_size + i);
+                result.candidates.push_back(candidateSnapshot(absolute_index, text, comment));
             }
         }
         result.hasNextPage = !context.menu.is_last_page;
@@ -329,10 +477,9 @@ public:
                 const char* text = context.menu.candidates[i].text;
                 const char* comment = context.menu.candidates[i].comment;
                 LOGI("Candidate[%d]: text='%s' comment='%s'", i, text ? text : "", comment ? comment : "");
-                result.candidates.push_back(std::make_pair(
-                    text ? text : "",
-                    comment ? comment : ""
-                ));
+                const size_t absolute_index =
+                    static_cast<size_t>(context.menu.page_no * context.menu.page_size + i);
+                result.candidates.push_back(candidateSnapshot(absolute_index, text, comment));
             }
             result.hasNextPage = !context.menu.is_last_page;
             result.hasPrevPage = context.menu.page_no > 0;
@@ -382,7 +529,7 @@ public:
         }
     }
 
-    void getCandidatesWithComments(std::vector<std::pair<std::string, std::string>>& candidates) {
+    void getCandidatesWithComments(std::vector<CandidateSnapshot>& candidates) {
         if (!rime || !session_id_) return;
         
         RIME_STRUCT(RimeContext, context);
@@ -392,10 +539,9 @@ public:
                 for (int i = 0; i < context.menu.num_candidates; ++i) {
                     const char* text = context.menu.candidates[i].text;
                     const char* comment = context.menu.candidates[i].comment;
-                    candidates.push_back(std::make_pair(
-                        text ? text : "",
-                        comment ? comment : ""
-                    ));
+                    const size_t absolute_index =
+                        static_cast<size_t>(context.menu.page_no * context.menu.page_size + i);
+                    candidates.push_back(candidateSnapshot(absolute_index, text, comment));
                 }
             }
             rime->free_context(&context);
@@ -429,7 +575,7 @@ public:
         if (!rime || !session_id_) return false;
         RIME_STRUCT(RimeContext, context);
         if (rime->get_context(session_id_, &context)) {
-            bool result = context.menu.page_no < context.menu.page_no + 1;
+            const bool result = context.menu.num_candidates > 0 && !context.menu.is_last_page;
             rime->free_context(&context);
             return result;
         }
@@ -577,6 +723,14 @@ public:
                     const char* dict = rime->config_get_cstring(&config, "translator/dictionary");
                     if (dict) {
                         LOGD("lookupText: schema '%s' uses dict '%s'", schema_id, dict);
+                        if (std::strcmp(dict, "wubi86") == 0) {
+                            const std::string source_code = longestWubiCode(text);
+                            if (!source_code.empty()) {
+                                outCode = source_code;
+                                rime->config_close(&config);
+                                return true;
+                            }
+                        }
                         auto d = rldc->Create(dict);
                         if (d && d->Load()) {
                             std::string r;
@@ -600,14 +754,26 @@ public:
             }
         }
         
+        // Wubi display uses the source-order-preserving forward cache; the compiled reverse DB
+        // stores codes in set order and therefore cannot implement equal-length tie-breaking.
+        const std::string source_wubi = longestWubiCode(text);
+        if (!source_wubi.empty()) {
+            outCode = source_wubi;
+            return true;
+        }
+
         // fallback: 依次尝试已知编码字典
-        const char* fallbacks[] = {"wubi86", "pinyin_simp", nullptr};
+        const char* fallbacks[] = {"pinyin_simp", nullptr};
         for (int i = 0; fallbacks[i]; i++) {
             auto d = rldc->Create(fallbacks[i]);
             if (!d) continue;
             if (d->Load()) {
                 std::string r;
-                if (d->ReverseLookup(text, &r)) { outCode = r; delete d; return true; }
+                if (d->ReverseLookup(text, &r)) {
+                    outCode = r;
+                    delete d;
+                    return true;
+                }
             }
             delete d;
         }
@@ -628,6 +794,8 @@ public:
             LOGI("Destroying old session before deployment");
             rime->destroy_session(session_id_);
             session_id_ = 0;
+            wubi_source_codes_.clear();
+            wubi_source_codes_loaded_ = false;
         }
         
         // 删除 installation.yaml 以强制触发完整编译
@@ -706,6 +874,8 @@ public:
         if (session_id_) {
             rime->destroy_session(session_id_);
             session_id_ = 0;
+            wubi_source_codes_.clear();
+            wubi_source_codes_loaded_ = false;
         }
         
         Bool result = rime->deploy_schema(schemaPath.c_str());
@@ -811,6 +981,8 @@ public:
                 rime->destroy_session(session_id_);
                 session_id_ = 0;
             }
+            wubi_source_codes_.clear();
+            wubi_source_codes_loaded_ = false;
             rime->finalize();
         }
         initialized_ = false;
@@ -879,15 +1051,15 @@ public:
         return value;
     }
 
-    // 读取 user.yaml 用户状态布尔值
-    bool getUserConfigBool(const char* key) {
-        if (!rime || !initialized_) return false;
+    // 读取 user.yaml 用户状态布尔值：1=true，0=false，-1=键不存在/不可读。
+    int getUserConfigBoolState(const char* key) {
+        if (!rime || !initialized_) return -1;
         RimeConfig config;
-        if (!rime->user_config_open("user", &config)) return false;
+        if (!rime->user_config_open("user", &config)) return -1;
         Bool value = False;
-        rime->config_get_bool(&config, key, &value);
+        const Bool found = rime->config_get_bool(&config, key, &value);
         rime->config_close(&config);
-        return value == True;
+        return found ? (value == True ? 1 : 0) : -1;
     }
 
     // 写 user.yaml 用户状态字符串（user_config 组件 auto_save=true）
@@ -926,6 +1098,8 @@ private:
     // app 设置的每页候选数覆盖值（<=0 表示未设置）；会话重建后由
     // reapplyPageSizeIfNeeded 重新对齐，保证不被方案自带值（PC 默认 5）漂移
     int page_size_override_ = 0;
+    std::unordered_map<std::string, std::string> wubi_source_codes_;
+    bool wubi_source_codes_loaded_ = false;
 };
 
 extern "C" {
@@ -937,12 +1111,26 @@ static jmethodID gRimeCompositionCtor = nullptr;
 static jclass gRimeCandidateClass = nullptr;
 static jmethodID gRimeCandidateCtor = nullptr;
 
+static jobject makeJavaCandidate(JNIEnv* env, const CandidateSnapshot& snapshot) {
+    jstring text = env->NewStringUTF(snapshot.text.c_str());
+    jstring comment = env->NewStringUTF(snapshot.comment.c_str());
+    jstring sourceType = env->NewStringUTF(snapshot.sourceType.c_str());
+    jstring fullWubiCode = env->NewStringUTF(snapshot.fullWubiCode.c_str());
+    jobject candidate = env->NewObject(
+        gRimeCandidateClass, gRimeCandidateCtor, text, comment, sourceType, fullWubiCode);
+    env->DeleteLocalRef(text);
+    env->DeleteLocalRef(comment);
+    env->DeleteLocalRef(sourceType);
+    env->DeleteLocalRef(fullWubiCode);
+    return candidate;
+}
+
 static void ensureJniCache(JNIEnv* env) {
     if (!gRimeCandidateClass) {
         jclass cls = env->FindClass("com/kingzcheung/xime/rime/RimeCandidate");
         gRimeCandidateClass = (jclass)env->NewGlobalRef(cls);
         gRimeCandidateCtor = env->GetMethodID(gRimeCandidateClass, "<init>",
-            "(Ljava/lang/String;Ljava/lang/String;)V");
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
         env->DeleteLocalRef(cls);
     }
     if (!gRimeProcessResultClass) {
@@ -1069,12 +1257,8 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeProcessKeyAndGetResult(
         result.candidates.size(), gRimeCandidateClass, nullptr);
 
     for (size_t i = 0; i < result.candidates.size(); ++i) {
-        jstring text = env->NewStringUTF(result.candidates[i].first.c_str());
-        jstring comment = env->NewStringUTF(result.candidates[i].second.c_str());
-        jobject candidate = env->NewObject(gRimeCandidateClass, gRimeCandidateCtor, text, comment);
+        jobject candidate = makeJavaCandidate(env, result.candidates[i]);
         env->SetObjectArrayElement(candidateArray, i, candidate);
-        env->DeleteLocalRef(text);
-        env->DeleteLocalRef(comment);
         env->DeleteLocalRef(candidate);
     }
 
@@ -1120,12 +1304,8 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetProcessResult(
         result.candidates.size(), gRimeCandidateClass, nullptr);
 
     for (size_t i = 0; i < result.candidates.size(); ++i) {
-        jstring text = env->NewStringUTF(result.candidates[i].first.c_str());
-        jstring comment = env->NewStringUTF(result.candidates[i].second.c_str());
-        jobject candidate = env->NewObject(gRimeCandidateClass, gRimeCandidateCtor, text, comment);
+        jobject candidate = makeJavaCandidate(env, result.candidates[i]);
         env->SetObjectArrayElement(candidateArray, i, candidate);
-        env->DeleteLocalRef(text);
-        env->DeleteLocalRef(comment);
         env->DeleteLocalRef(candidate);
     }
 
@@ -1189,12 +1369,8 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetComposition(
         result.candidates.size(), gRimeCandidateClass, nullptr);
 
     for (size_t i = 0; i < result.candidates.size(); ++i) {
-        jstring text = env->NewStringUTF(result.candidates[i].first.c_str());
-        jstring comment = env->NewStringUTF(result.candidates[i].second.c_str());
-        jobject candidate = env->NewObject(gRimeCandidateClass, gRimeCandidateCtor, text, comment);
+        jobject candidate = makeJavaCandidate(env, result.candidates[i]);
         env->SetObjectArrayElement(candidateArray, i, candidate);
-        env->DeleteLocalRef(text);
-        env->DeleteLocalRef(comment);
         env->DeleteLocalRef(candidate);
     }
 
@@ -1246,7 +1422,7 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetCandidatesWithComments(
     JNIEnv* env,
     jobject thiz
 ) {
-    std::vector<std::pair<std::string, std::string>> candidates;
+    std::vector<CandidateSnapshot> candidates;
     Rime::Instance().getCandidatesWithComments(candidates);
     
     jclass stringClass = env->FindClass("java/lang/String");
@@ -1255,15 +1431,21 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetCandidatesWithComments(
     jobjectArray result = env->NewObjectArray(candidates.size(), stringArrayClass, nullptr);
     
     for (size_t i = 0; i < candidates.size(); ++i) {
-        jobjectArray pair = env->NewObjectArray(2, stringClass, nullptr);
-        jstring text = env->NewStringUTF(candidates[i].first.c_str());
-        jstring comment = env->NewStringUTF(candidates[i].second.c_str());
-        env->SetObjectArrayElement(pair, 0, text);
-        env->SetObjectArrayElement(pair, 1, comment);
-        env->SetObjectArrayElement(result, i, pair);
+        jobjectArray fields = env->NewObjectArray(4, stringClass, nullptr);
+        jstring text = env->NewStringUTF(candidates[i].text.c_str());
+        jstring comment = env->NewStringUTF(candidates[i].comment.c_str());
+        jstring sourceType = env->NewStringUTF(candidates[i].sourceType.c_str());
+        jstring fullWubiCode = env->NewStringUTF(candidates[i].fullWubiCode.c_str());
+        env->SetObjectArrayElement(fields, 0, text);
+        env->SetObjectArrayElement(fields, 1, comment);
+        env->SetObjectArrayElement(fields, 2, sourceType);
+        env->SetObjectArrayElement(fields, 3, fullWubiCode);
+        env->SetObjectArrayElement(result, i, fields);
         env->DeleteLocalRef(text);
         env->DeleteLocalRef(comment);
-        env->DeleteLocalRef(pair);
+        env->DeleteLocalRef(sourceType);
+        env->DeleteLocalRef(fullWubiCode);
+        env->DeleteLocalRef(fields);
     }
     
     return result;
@@ -1773,18 +1955,18 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetUserConfigString(
     return value.empty() ? nullptr : env->NewStringUTF(value.c_str());
 }
 
-// 读取 user.yaml 用户状态布尔值
-JNIEXPORT jboolean JNICALL
-Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetUserConfigBool(
+// 读取 user.yaml 用户状态布尔值：1=true，0=false，-1=键不存在/不可读。
+JNIEXPORT jint JNICALL
+Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetUserConfigBoolState(
     JNIEnv* env,
     jobject thiz,
     jstring key
 ) {
     const char* key_ptr = env->GetStringUTFChars(key, nullptr);
-    if (!key_ptr) return JNI_FALSE;
-    bool value = Rime::Instance().getUserConfigBool(key_ptr);
+    if (!key_ptr) return -1;
+    const int state = Rime::Instance().getUserConfigBoolState(key_ptr);
     env->ReleaseStringUTFChars(key, key_ptr);
-    return value ? JNI_TRUE : JNI_FALSE;
+    return state;
 }
 
 // 写 user.yaml 用户状态字符串

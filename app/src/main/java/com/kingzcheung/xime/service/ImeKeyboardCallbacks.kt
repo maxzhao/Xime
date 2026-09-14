@@ -138,7 +138,9 @@ internal fun rememberImeKeyboardCallbacks(
             },
             onReloadConfig = { service.schemaController.reloadConfig() },
             onSettings = { service.schemaController.openSettings() },
-            onSwitchSchema = { schemaId -> service.schemaController.switchSchema(schemaId) },
+            onSwitchSchema = { schemaId ->
+                service.keyRouter.postRimeJob { service.schemaController.switchSchema(schemaId) }
+            },
             onToggleSchemaSwitch = { sw -> service.sessionController.toggleSchemaSwitch(sw) },
             onHideKeyboard = { service.hideKeyboard() },
             onSwitchKeyboard = {
@@ -159,79 +161,26 @@ internal fun rememberImeKeyboardCallbacks(
                 }
             },
             onVoiceModeChange = { enabled ->
-                if (!enabled) {
+                if (enabled) {
+                    service.startVoiceInput(sticky = false, enableTouchTracking = true)
+                } else {
                     // 长按抬手：结束语音会话（提交当前已识别文本并停止识别）
                     service.endVoiceSession()
-                } else if (!service.uiState.value.isVoiceMode) {
-                    service.uiState.value = service.uiState.value.copy(
-                        isVoiceMode = true,
-                        voiceSticky = false,
-                        voiceButtonState = VoiceButtonState(bottomActive = true),
-                        voiceRecognizedText = ""
-                    )
-                    service.keyboardViewModel.enterVoice()
-                    service.feedbackManager.performVibration()
-                    service.isTrackingVoiceButtons = true
-                    service.keyboardContainer.enableVoiceButtonTracking()
-                    service.voiceRecordingStarted = true
-                    // 立即提前启动麦克风录音（等 150ms 的话模型常驻时加载极快，
-                    // preStarted 可能还没创建好就被 startRecording 跳过，导致开头丢失）
-                    service.voiceRecognitionHandler.startDelayedPreStart(0)
-                    service.voiceRecognitionHandler.startRecognition()
                 }
             },
             onVoiceStickyToggle = {
-                val state = service.uiState.value
-                if (state.isVoiceMode && state.voiceSticky) {
-                    // 常驻语音中：点按空格/再次点击工具栏即结束
-                    service.endVoiceSession()
-                } else if (!state.isVoiceMode) {
-                    // 进入常驻语音：保持正常键盘布局，候选栏显示频谱，空格键轻触结束
-                    service.uiState.value = service.uiState.value.copy(
-                        isVoiceMode = true,
-                        voiceSticky = true,
-                        voiceButtonState = VoiceButtonState(bottomActive = true),
-                        voiceRecognizedText = ""
-                    )
-                    service.voiceRecordingStarted = true
-                    service.voiceRecognitionHandler.startDelayedPreStart(0)
-                    service.voiceRecognitionHandler.startRecognition()
-                }
+                service.toggleStickyVoiceInput()
             },
             onPageDown = { service.keyRouter.pageDown() },
             onPageUp = { service.keyRouter.pageUp() },
             onCursorMove = { direction ->
-                val ic = service.currentInputConnection
-                if (ic != null && direction != 0) {
-                    if (SettingsPreferences.getInputTextLocation(service) == SettingsPreferences.INPUT_TEXT_INPUT_BOX &&
-                        service.candidateState.value.isComposing
-                    ) {
-                        // 输入框模式：移动光标前先结束 composing 并清空 RIME 组成，
-                        // 避免再次输入时 composing 区域与光标位置错乱
-                        ic.finishComposingText()
-                        service.keyRouter.postRimeJob {
-                            service.rimeEngine.clearComposition()
-                            withContext(Dispatchers.Main) {
-                                service.mainHandler.post { service.updateUI() }
-                            }
-                        }
-                    }
-                    var movedBySelection = false
-                    try {
-                        val req = android.view.inputmethod.ExtractedTextRequest()
-                        val extracted = ic.getExtractedText(req, 0)
-                        if (extracted != null && extracted.selectionStart >= 0) {
-                            val newPos = (extracted.selectionStart + direction)
-                                .coerceIn(0, extracted.text?.length ?: 0)
-                            ic.setSelection(newPos, newPos)
-                            movedBySelection = true
-                        }
-                    } catch (_: Exception) {}
-                    if (!movedBySelection) {
-                        val keyCode = if (direction < 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
-                        repeat(abs(direction)) {
-                            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-                            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+                if (direction != 0) {
+                    val rimeKey = if (direction < 0) 0xff51 else 0xff53
+                    repeat(abs(direction)) {
+                        service.keyRouter.handleSoftRimeEditingKey(rimeKey) {
+                            val keyCode = if (direction < 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+                            service.currentInputConnection?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+                            service.currentInputConnection?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
                         }
                     }
                 }

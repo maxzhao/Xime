@@ -30,6 +30,7 @@ object SettingsPreferences {
     private const val KEY_ASSOCIATION_SINGLE_MODE = "association_single_mode"
     
     const val KEY_STT_ENABLED = "stt_enabled"
+    const val DEFAULT_STT_ENABLED = true
     const val KEY_STT_ONLINE_PLUGIN_ID = "stt_online_plugin_id"
     const val KEY_STT_USE_LOCAL = "stt_use_local"
     const val KEY_STT_DEBUG_RECORD = "stt_debug_record"
@@ -390,7 +391,7 @@ object SettingsPreferences {
     }
     
     fun isSttEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_STT_ENABLED, false)
+        return getPrefs(context).getBoolean(KEY_STT_ENABLED, DEFAULT_STT_ENABLED)
     }
     
     fun setSttEnabled(context: Context, enabled: Boolean) {

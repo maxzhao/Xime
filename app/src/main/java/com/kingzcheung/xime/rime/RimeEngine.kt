@@ -6,8 +6,76 @@ import java.util.concurrent.locks.ReentrantLock
 
 data class RimeCandidate(
     val text: String,
-    val comment: String
-)
+    val comment: String,
+    /** `Candidate::GetGenuineCandidate()` 的真实来源类型。 */
+    val sourceType: String = "",
+    /** 仅 `wubi86_pinyin` 的 reverse_lookup 候选携带；不参与提交。 */
+    val fullWubiCode: String = "",
+) {
+    val displayText: String
+        get() = if (fullWubiCode.isEmpty()) text else "$text($fullWubiCode)"
+}
+
+sealed interface RimeKeyDispatch {
+    val result: RimeProcessResult?
+
+    data class Handled(override val result: RimeProcessResult) : RimeKeyDispatch
+    data class Unhandled(override val result: RimeProcessResult) : RimeKeyDispatch
+    data object Unavailable : RimeKeyDispatch {
+        override val result: RimeProcessResult? = null
+    }
+}
+
+/** Action resolved from the transformed candidate snapshot inspected under the Rime input lock. */
+sealed interface RimeCandidateSelection {
+    data class Engine(val currentPageIndex: Int) : RimeCandidateSelection
+    data class DirectCommit(val text: String) : RimeCandidateSelection
+    data class PageKey(val keycode: Int) : RimeCandidateSelection
+    data object NoAction : RimeCandidateSelection
+}
+
+internal fun resolveDisplayedCandidateSelection(
+    transformed: List<Pair<RimeCandidate, CandidateSelectionRef>>?,
+    engineCandidates: List<RimeCandidate>,
+    displayIndex: Int,
+): RimeCandidateSelection {
+    if (transformed != null) {
+        val selected = transformed.getOrNull(displayIndex) ?: return RimeCandidateSelection.NoAction
+        return when (val ref = selected.second) {
+            is CandidateSelectionRef.Engine -> RimeCandidateSelection.Engine(ref.index)
+            is CandidateSelectionRef.DirectCommit -> RimeCandidateSelection.DirectCommit(ref.text)
+        }
+    }
+    return if (engineCandidates.getOrNull(displayIndex) != null) {
+        RimeCandidateSelection.Engine(displayIndex)
+    } else {
+        RimeCandidateSelection.NoAction
+    }
+}
+
+sealed interface CandidateSelectionRef {
+    data class Engine(val index: Int) : CandidateSelectionRef
+    data class DirectCommit(val text: String) : CandidateSelectionRef
+}
+
+/** Authoritative outcome for physical candidate shortcuts. */
+sealed interface RimeCandidateShortcutDispatch {
+    data class Handled(
+        val result: RimeProcessResult,
+        val directCommitText: String = "",
+    ) : RimeCandidateShortcutDispatch
+    data object Unhandled : RimeCandidateShortcutDispatch
+    data object Unavailable : RimeCandidateShortcutDispatch
+}
+
+internal fun RimeKeyDispatch.allowsHostFallback(): Boolean = this is RimeKeyDispatch.Unhandled
+internal fun RimeCandidateShortcutDispatch.allowsHostFallback(): Boolean =
+    this is RimeCandidateShortcutDispatch.Unhandled
+internal fun decodeUserConfigBoolState(state: Int): Boolean? = when (state) {
+    1 -> true
+    0 -> false
+    else -> null
+}
 
 /**
  * 批量查询当前 composition 状态。
@@ -110,6 +178,17 @@ fun RimeProcessResult.toComposition(): RimeComposition {
         isAsciiMode = isAsciiMode,
     )
 }
+
+private fun RimeComposition.asProcessResult(processed: Boolean) = RimeProcessResult(
+    processed = processed,
+    committedText = committedText,
+    inputText = input,
+    preeditText = preedit,
+    candidates = candidates,
+    isAsciiMode = isAsciiMode,
+    hasNextPage = hasNextPage,
+    hasPrevPage = hasPrevPage,
+)
 
 class RimeEngine {
 
@@ -274,14 +353,73 @@ class RimeEngine {
         }
     }
 
-    fun processKeyAndGetResult(keycode: Int, mask: Int): RimeProcessResult {
-        if (!isInitialized) return RimeProcessResult(false, "", "", "", emptyArray(), false, false, false)
-        return tryLocked(RimeProcessResult(false, "", "", "", emptyArray(), false, false, false)) {
-            if (!nativeHasSession() && !nativeCreateSession())
-                return@tryLocked RimeProcessResult(false, "", "", "", emptyArray(), false, false, false)
-            nativeProcessKeyAndGetResult(keycode, mask)
+    /**
+     * 有序输入派发：调用方已在 keyProcessingDispatcher 中串行，且此处阻塞等待
+     * rimeLock；只有真实 Rime 拒绝才返回 [RimeKeyDispatch.Unhandled]。
+     */
+    fun dispatchKey(keycode: Int, mask: Int): RimeKeyDispatch {
+        if (!isInitialized) return RimeKeyDispatch.Unavailable
+        return locked {
+            if (nativeIsMaintaining()) return@locked RimeKeyDispatch.Unavailable
+            if (!nativeHasSession() && !nativeCreateSession()) return@locked RimeKeyDispatch.Unavailable
+            val result = nativeProcessKeyAndGetResult(keycode, mask)
+            if (result.processed) RimeKeyDispatch.Handled(result)
+            else RimeKeyDispatch.Unhandled(result)
         }
     }
+
+    /**
+     * Inspect composition and execute a physical candidate shortcut under one ordered lock.
+     * Only an actually empty Rime state is Unhandled. Missing transformed candidates/pages
+     * are consumed with NoAction and never leak to the host editor.
+     */
+    fun dispatchCandidateShortcut(
+        resolve: (RimeComposition) -> RimeCandidateSelection,
+    ): RimeCandidateShortcutDispatch {
+        if (!isInitialized) return RimeCandidateShortcutDispatch.Unavailable
+        return locked {
+            if (nativeIsMaintaining()) return@locked RimeCandidateShortcutDispatch.Unavailable
+            if (!nativeHasSession() && !nativeCreateSession()) {
+                return@locked RimeCandidateShortcutDispatch.Unavailable
+            }
+            val composition = nativeGetComposition()
+            if (composition.input.isEmpty() && composition.candidates.isEmpty()) {
+                return@locked RimeCandidateShortcutDispatch.Unhandled
+            }
+            when (val selection = resolve(composition)) {
+                RimeCandidateSelection.NoAction -> RimeCandidateShortcutDispatch.Handled(
+                    composition.asProcessResult(processed = true)
+                )
+                is RimeCandidateSelection.DirectCommit -> {
+                    nativeClearComposition()
+                    RimeCandidateShortcutDispatch.Handled(
+                        result = nativeGetProcessResult(true),
+                        directCommitText = selection.text,
+                    )
+                }
+                is RimeCandidateSelection.Engine -> {
+                    if (!nativeSelectCandidate(selection.currentPageIndex)) {
+                        RimeCandidateShortcutDispatch.Handled(
+                            composition.asProcessResult(processed = true)
+                        )
+                    } else {
+                        val committed = nativeCommit().orEmpty()
+                        RimeCandidateShortcutDispatch.Handled(
+                            nativeGetProcessResult(true).copy(committedText = committed)
+                        )
+                    }
+                }
+                is RimeCandidateSelection.PageKey -> RimeCandidateShortcutDispatch.Handled(
+                    nativeProcessKeyAndGetResult(selection.keycode, 0)
+                )
+            }
+        }
+    }
+
+    /** 旧调用入口保留返回值形状，但输入路径使用等待锁语义，不再把锁竞争伪装成未处理。 */
+    fun processKeyAndGetResult(keycode: Int, mask: Int): RimeProcessResult =
+        dispatchKey(keycode, mask).result
+            ?: RimeProcessResult(false, "", "", "", emptyArray(), false, false, false)
 
     fun getProcessResult(processed: Boolean): RimeProcessResult {
         if (!isInitialized) return RimeProcessResult(false, "", "", "", emptyArray(), false, false, false)
@@ -308,7 +446,9 @@ class RimeEngine {
             rawCandidates.map { pair ->
                 RimeCandidate(
                     text = pair.getOrElse(0) { "" },
-                    comment = pair.getOrElse(1) { "" }
+                    comment = pair.getOrElse(1) { "" },
+                    sourceType = pair.getOrElse(2) { "" },
+                    fullWubiCode = pair.getOrElse(3) { "" },
                 )
             }.toTypedArray()
         }
@@ -421,25 +561,30 @@ class RimeEngine {
     }
 
     fun isAsciiMode(): Boolean {
-        return tryLocked(false) {
-            if (!nativeHasSession() && !nativeCreateSession()) return@tryLocked false
+        if (!isInitialized) return false
+        return locked {
+            if (!nativeHasSession() && !nativeCreateSession()) return@locked false
             nativeIsAsciiMode()
         }
     }
 
     fun setOption(option: String, value: Boolean) {
-        if (!nativeHasSession()) return
-        nativeSetOption(option, value)
+        if (!isInitialized) return
+        locked {
+            if (nativeHasSession()) nativeSetOption(option, value)
+        }
     }
 
     fun getOption(option: String): Boolean {
-        if (!nativeHasSession()) return false
-        return nativeGetOption(option)
+        if (!isInitialized) return false
+        return locked {
+            if (!nativeHasSession()) false else nativeGetOption(option)
+        }
     }
 
     fun setPageSize(schemaId: String, pageSize: Int) {
         if (!isInitialized) return
-        nativeSetPageSize(schemaId, pageSize)
+        locked { nativeSetPageSize(schemaId, pageSize) }
     }
 
     fun switchSchema(schemaId: String): Boolean {
@@ -565,25 +710,25 @@ class RimeEngine {
     /** 读取 user.yaml 用户状态字符串（如 var/previously_selected_schema）。 */
     fun getUserConfigString(key: String): String? {
         if (!isInitialized) return null
-        return nativeGetUserConfigString(key)
+        return locked { nativeGetUserConfigString(key) }
     }
 
-    /** 读取 user.yaml 用户状态布尔值（如 var/option/ascii_mode）。 */
-    fun getUserConfigBool(key: String): Boolean {
-        if (!isInitialized) return false
-        return nativeGetUserConfigBool(key)
+    /** 读取 user.yaml 用户状态布尔值；null 表示键不存在，必须区别于显式 false。 */
+    fun getUserConfigBool(key: String): Boolean? {
+        if (!isInitialized) return null
+        return locked { decodeUserConfigBoolState(nativeGetUserConfigBoolState(key)) }
     }
 
     /** 写 user.yaml 用户状态字符串（auto_save，自动落盘）。 */
     fun setUserConfigString(key: String, value: String) {
         if (!isInitialized) return
-        nativeSetUserConfigString(key, value)
+        locked { nativeSetUserConfigString(key, value) }
     }
 
     /** 写 user.yaml 用户状态布尔值（auto_save，自动落盘）。 */
     fun setUserConfigBool(key: String, value: Boolean) {
         if (!isInitialized) return
-        nativeSetUserConfigBool(key, value)
+        locked { nativeSetUserConfigBool(key, value) }
     }
 
     /** 运行时切换 JNI verbose 日志（仅 Debug 构建生效，Release 为空操作）。 */
@@ -702,7 +847,7 @@ class RimeEngine {
     private external fun nativeGetSchemaList(schemaId: String, key: String): Array<String>?
     private external fun nativeGetSchemaString(schemaId: String, key: String): String?
     private external fun nativeGetUserConfigString(key: String): String?
-    private external fun nativeGetUserConfigBool(key: String): Boolean
+    private external fun nativeGetUserConfigBoolState(key: String): Int
     private external fun nativeSetUserConfigString(key: String, value: String): Boolean
     private external fun nativeSetUserConfigBool(key: String, value: Boolean): Boolean
     private external fun nativeIsModuleRegistered(moduleName: String): Boolean

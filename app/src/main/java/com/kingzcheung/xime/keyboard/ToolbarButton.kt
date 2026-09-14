@@ -42,7 +42,7 @@ enum class ToolbarButton(
     VOICE("voice", "语音", Icons.TwoTone.Mic);
 
     companion object {
-        val DEFAULT_VISIBLE = emptySet<ToolbarButton>()
+        val DEFAULT_VISIBLE = setOf(VOICE)
 
         fun fromId(id: String): ToolbarButton? =
             entries.find { it.id == id }

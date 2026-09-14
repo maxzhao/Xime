@@ -17,7 +17,7 @@ data class InputUIState(
     val enterKeyText: String = "发送",
     val darkMode: Int = 0,
     val themeId: String = "ocean_blue",
-    val isSttEnabled: Boolean = false,
+    val isSttEnabled: Boolean = SettingsPreferences.DEFAULT_STT_ENABLED,
     val keyboardHeightDp: Int = 0,
     val keyboardBottomPaddingDp: Int = 0,
     val showKeyboardResize: Boolean = false,

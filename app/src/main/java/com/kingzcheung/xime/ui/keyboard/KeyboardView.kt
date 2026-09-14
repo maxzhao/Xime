@@ -352,6 +352,9 @@ fun KeyboardView(
                 voicePluginName = state.voicePluginName,
                 toolbarActions = state.toolbarButtons.mapNotNull { id ->
                     val item = resolveToolbarButtonItem(id, state.toolbarPluginButtons) ?: return@mapNotNull null
+                    if (item is ToolbarButtonItem.Builtin && item.button == ToolbarButton.VOICE && !state.isSttEnabled) {
+                        return@mapNotNull null
+                    }
                     if (item is ToolbarButtonItem.Builtin && item.button == ToolbarButton.HANDWRITING_LOOKUP) {
                         if (!com.kingzcheung.xime.handwriting.HandwritingEngine.hasModel(LocalContext.current)) return@mapNotNull null
                     }

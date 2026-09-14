@@ -350,23 +350,94 @@ object RimeConfigHelper {
      */
     internal fun patchDefaultCustomContent(text: String, pageSize: Int): String? {
         val sep = if (text.contains("\r\n")) "\r\n" else "\n"
-        val lines = text.lines()
-        val pageSizeIdx = lines.indexOfFirst { it.trimStart().startsWith("page_size:") }
-        if (pageSizeIdx >= 0) {
-            val raw = lines[pageSizeIdx].trimStart().removePrefix("page_size:")
-                .substringBefore('#').trim()
-            if (raw.toIntOrNull() == pageSize) return null
-            val indent = lines[pageSizeIdx].takeWhile { it == ' ' || it == '\t' }
-            val updated = lines.toMutableList()
-            updated[pageSizeIdx] = "${indent}page_size: $pageSize"
-            return updated.joinToString(sep)
-        }
-        val patchIdx = lines.indexOfFirst { it.trim() == "patch:" }
+        val originalLines = text.lines()
+        val patchIdx = originalLines.indexOfFirst { it.trim() == "patch:" }
         if (patchIdx < 0) return null
-        val updated = lines.toMutableList()
-        updated.add(patchIdx + 1, "  menu:")
-        updated.add(patchIdx + 2, "    page_size: $pageSize")
-        return updated.joinToString(sep)
+        val updated = originalLines.toMutableList()
+
+        val pageSizeIdx = updated.indexOfFirst { it.trimStart().startsWith("page_size:") }
+        if (pageSizeIdx >= 0) {
+            val raw = updated[pageSizeIdx].trimStart().removePrefix("page_size:")
+                .substringBefore('#').trim()
+            if (raw.toIntOrNull() != pageSize) {
+                val indent = updated[pageSizeIdx].takeWhile { it == ' ' || it == '\t' }
+                updated[pageSizeIdx] = "${indent}page_size: $pageSize"
+            }
+        } else {
+            updated.add(patchIdx + 1, "  menu:")
+            updated.add(patchIdx + 2, "    page_size: $pageSize")
+        }
+
+        alignAsciiComposerSwitchKeys(updated, patchIdx)
+        alignOwnedKeyBindings(updated, patchIdx)
+        return if (updated == originalLines) null else updated.joinToString(sep)
+    }
+
+    private fun alignAsciiComposerSwitchKeys(lines: MutableList<String>, patchIdx: Int) {
+        var asciiIdx = lines.indexOfFirst { it.trim() == "ascii_composer:" }
+        if (asciiIdx < 0) {
+            asciiIdx = patchIdx + 1
+            lines.add(asciiIdx, "  ascii_composer:")
+            lines.add(asciiIdx + 1, "    switch_key:")
+        }
+        var switchIdx = lines.indexOfFirstInSection(asciiIdx, 2) { it.trim() == "switch_key:" }
+        if (switchIdx < 0) {
+            switchIdx = asciiIdx + 1
+            lines.add(switchIdx, "    switch_key:")
+        }
+        setOrInsertOwnedLine(lines, switchIdx, "Shift_L:", "      Shift_L: noop")
+        setOrInsertOwnedLine(lines, switchIdx, "Shift_R:", "      Shift_R: commit_code")
+    }
+
+    private fun alignOwnedKeyBindings(lines: MutableList<String>, patchIdx: Int) {
+        var binderIdx = lines.indexOfFirst { it.trim() == "key_binder:" }
+        if (binderIdx < 0) {
+            binderIdx = patchIdx + 1
+            lines.add(binderIdx, "  key_binder:")
+            lines.add(binderIdx + 1, "    bindings:")
+        }
+        var bindingsIdx = lines.indexOfFirstInSection(binderIdx, 2) { it.trim() == "bindings:" }
+        if (bindingsIdx < 0) {
+            bindingsIdx = binderIdx + 1
+            lines.add(bindingsIdx, "    bindings:")
+        }
+        val owned = listOf(
+            "Control+period" to "      - { when: always, accept: Control+period, toggle: ascii_punct }",
+            "accept: semicolon" to "      - { when: has_menu, accept: semicolon, send: 2 }",
+            "accept: apostrophe" to "      - { when: has_menu, accept: apostrophe, send: 3 }",
+            "accept: bracketleft" to "      - { when: has_menu, accept: bracketleft, send: Page_Up }",
+            "accept: bracketright" to "      - { when: has_menu, accept: bracketright, send: Page_Down }",
+        )
+        var insertAt = bindingsIdx + 1
+        for ((marker, line) in owned) {
+            val existing = lines.indexOfFirst {
+                it.contains(marker) && !it.trimStart().startsWith("#")
+            }
+            if (existing >= 0) {
+                lines[existing] = line
+            } else {
+                lines.add(insertAt, line)
+                insertAt++
+            }
+        }
+    }
+
+    private fun MutableList<String>.indexOfFirstInSection(
+        sectionIndex: Int,
+        sectionIndent: Int,
+        predicate: (String) -> Boolean,
+    ): Int {
+        for (i in sectionIndex + 1 until size) {
+            val line = this[i]
+            if (line.isNotBlank() && line.takeWhile { it == ' ' }.length <= sectionIndent) break
+            if (predicate(line)) return i
+        }
+        return -1
+    }
+
+    private fun setOrInsertOwnedLine(lines: MutableList<String>, sectionIndex: Int, marker: String, value: String) {
+        val existing = lines.indexOfFirst { it.trimStart().startsWith(marker) }
+        if (existing >= 0) lines[existing] = value else lines.add(sectionIndex + 1, value)
     }
 
     /**

@@ -56,8 +56,11 @@ class DefaultCustomYamlTest {
     // ---- patchDefaultCustomContent（default 层对齐）----
 
     @Test
-    fun `已是目标值无需修补`() {
-        assertNull(RimeConfigHelper.patchDefaultCustomContent(builtinTemplate, 20))
+    fun `仅page_size已对齐仍补齐输入法固定绑定`() {
+        val patched = RimeConfigHelper.patchDefaultCustomContent(builtinTemplate, 20)!!
+        assertEquals(20, extractPageSize(patched))
+        assertTrue(patched.contains("Shift_L: noop"))
+        assertTrue(patched.contains("Control+period"))
     }
 
     @Test
@@ -106,6 +109,31 @@ class DefaultCustomYamlTest {
         assertTrue("CRLF 必须保留", patched.contains("\r\n"))
         assertFalse("无裸 LF 残留", patched.replace("\r\n", "").contains("\n"))
         assertEquals(20, extractPageSize(patched))
+    }
+
+    @Test
+    fun `accepted hardware bindings are aligned while schema list is preserved`() {
+        val legacy = """
+            patch:
+              schema_list:
+                - schema: user_schema
+              ascii_composer:
+                switch_key:
+                  Shift_L: commit_code
+                  Shift_R: noop
+              key_binder:
+                bindings:
+                  - { when: has_menu, accept: semicolon, send: 9 }
+        """.trimIndent()
+        val patched = RimeConfigHelper.patchDefaultCustomContent(legacy, 20)!!
+        assertTrue(patched.contains("- schema: user_schema"))
+        assertTrue(patched.contains("Shift_L: noop"))
+        assertTrue(patched.contains("Shift_R: commit_code"))
+        assertTrue(patched.contains("Control+period, toggle: ascii_punct"))
+        assertTrue(patched.contains("accept: semicolon, send: 2"))
+        assertTrue(patched.contains("accept: apostrophe, send: 3"))
+        assertTrue(patched.contains("accept: bracketleft, send: Page_Up"))
+        assertTrue(patched.contains("accept: bracketright, send: Page_Down"))
     }
 
     // ---- 与 replaceSchemaListBlock 的组合（setEnabledSchemas 真实路径）----

@@ -40,6 +40,20 @@ class CandidateTransformCoordinatorTest {
     }
 
     @Test
+    fun `引擎引用保留来源和五笔展示元数据`() {
+        val decorated = listOf(
+            RimeCandidate("发", "拼音", sourceType = "reverse_lookup", fullWubiCode = "ntcy")
+        )
+        val result = CandidateTransformCoordinator.buildDisplay(
+            items = listOf(CandidateTransformItem(engineIndex = 0, text = null, comment = "覆盖")),
+            engineCandidates = decorated,
+        )!!
+        assertEquals("reverse_lookup", result.candidates.single().sourceType)
+        assertEquals("ntcy", result.candidates.single().fullWubiCode)
+        assertEquals("发(ntcy)", result.candidates.single().displayText)
+    }
+
+    @Test
     fun `引用项 comment 覆盖仅影响显示`() {
         val result = CandidateTransformCoordinator.buildDisplay(
             items = listOf(CandidateTransformItem(engineIndex = 0, text = null, comment = "覆盖注释")),

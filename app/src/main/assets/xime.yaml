@@ -6,6 +6,11 @@ metadata:
   generator: "Xime Config Generator" # 暂时无用
   modified_time: "2026-07-05"
 
+input:
+  wubi86_pinyin:
+    # 仅在 user.yaml 尚无 var/option/ascii_mode 时使用；后续显式选择由 Rime 持久化。
+    default_ascii_mode: true
+
 xime_index:
   # 方案/插件/模型市场索引端点（ximeiorg/xime-index）。
   # 可替换为自建代理/镜像，下载器按顺序依次尝试，直到成功为止。

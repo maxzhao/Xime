@@ -72,7 +72,7 @@ internal class CandidateTransformCoordinator(private val service: XimeInputMetho
                 if (engineIdx != null) {
                     if (engineIdx < 0 || engineIdx >= engineCandidates.size || !seenEngineIdx.add(engineIdx)) continue
                     val engine = engineCandidates[engineIdx]
-                    display.add(RimeCandidate(engine.text, item.comment ?: engine.comment))
+                    display.add(engine.copy(comment = item.comment ?: engine.comment))
                     actions.add(CandidateAction.engine(engineIdx))
                 } else {
                     val text = item.text?.takeIf { it.isNotEmpty() } ?: continue

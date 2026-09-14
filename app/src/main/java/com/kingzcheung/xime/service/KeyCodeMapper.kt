@@ -170,6 +170,27 @@ internal fun hasRimeChordModifier(mask: Int): Boolean =
 internal fun hasRimeCommandModifier(mask: Int): Boolean =
     mask and (RIME_CONTROL_MASK or RIME_ALT_MASK or RIME_SUPER_MASK) != 0
 
+private const val ANDROID_CTRL_MASK =
+    KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON or KeyEvent.META_CTRL_RIGHT_ON
+private const val ANDROID_SHIFT_MASK =
+    KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON or KeyEvent.META_SHIFT_RIGHT_ON
+private const val ANDROID_ALT_MASK =
+    KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON or KeyEvent.META_ALT_RIGHT_ON
+private const val ANDROID_META_MASK =
+    KeyEvent.META_META_ON or KeyEvent.META_META_LEFT_ON or KeyEvent.META_META_RIGHT_ON
+private const val ANDROID_CHORD_MASK =
+    ANDROID_CTRL_MASK or ANDROID_SHIFT_MASK or ANDROID_ALT_MASK or ANDROID_META_MASK
+
+/** Ctrl+0（主键区或数字键盘）专用于切换 Xime 常驻语音输入。 */
+internal fun isVoiceToggleShortcut(keyCode: Int, metaState: Int): Boolean =
+    keyCode in setOf(KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_NUMPAD_0) &&
+        metaState and ANDROID_CTRL_MASK != 0 &&
+        metaState and (ANDROID_SHIFT_MASK or ANDROID_ALT_MASK or ANDROID_META_MASK) == 0
+
+/** 只有无 Shift/Ctrl/Alt/Meta 修饰的实体空格才参与长按语音判定。 */
+internal fun isUnmodifiedHardwareSpace(keyCode: Int, metaState: Int): Boolean =
+    keyCode == KeyEvent.KEYCODE_SPACE && metaState and ANDROID_CHORD_MASK == 0
+
 /** 普通、组合及特殊实体键 → Rime/X11 keysym。 */
 internal fun keyCodeToRimeKeyCode(keyCode: Int): Int? {
     if (keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z) {
@@ -234,6 +255,26 @@ internal fun keyCodeToRimeKeyCode(keyCode: Int): Int? {
     }
 }
 
+/** 组合态优先送 Rime、非组合态才允许宿主回退的编辑键。 */
+internal fun isCompositionEditingKey(keyCode: Int): Boolean = when (keyCode) {
+    KeyEvent.KEYCODE_DEL,
+    KeyEvent.KEYCODE_FORWARD_DEL,
+    KeyEvent.KEYCODE_DPAD_LEFT,
+    KeyEvent.KEYCODE_DPAD_UP,
+    KeyEvent.KEYCODE_DPAD_RIGHT,
+    KeyEvent.KEYCODE_DPAD_DOWN,
+    KeyEvent.KEYCODE_MOVE_HOME,
+    KeyEvent.KEYCODE_MOVE_END,
+    KeyEvent.KEYCODE_PAGE_UP,
+    KeyEvent.KEYCODE_PAGE_DOWN,
+    KeyEvent.KEYCODE_SPACE,
+    KeyEvent.KEYCODE_ENTER,
+    KeyEvent.KEYCODE_NUMPAD_ENTER,
+    KeyEvent.KEYCODE_ESCAPE,
+    -> true
+    else -> false
+}
+
 /** 无修饰键时也应由 Rime 处理、未处理则回送编辑器的非文本键。 */
 internal fun isRimeSpecialKey(keyCode: Int): Boolean = when (keyCode) {
     KeyEvent.KEYCODE_TAB,
@@ -259,12 +300,4 @@ internal fun isRimeSpecialKey(keyCode: Int): Boolean = when (keyCode) {
     in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F24,
     -> true
     else -> false
-}
-
-internal fun candidateIndexForHardwareKey(keyCode: Int): Int? = when (keyCode) {
-    in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> keyCode - KeyEvent.KEYCODE_1
-    KeyEvent.KEYCODE_0 -> 9
-    in KeyEvent.KEYCODE_NUMPAD_1..KeyEvent.KEYCODE_NUMPAD_9 -> keyCode - KeyEvent.KEYCODE_NUMPAD_1
-    KeyEvent.KEYCODE_NUMPAD_0 -> 9
-    else -> null
 }

@@ -16,8 +16,7 @@ patch:
   menu:
     page_size: 20                   # 候选词数量（手机屏一屏放得下，PC 版默认 5 太短）
   switcher:
-    hotkeys:        # 弹出菜单的快捷键
-      - "Control+0"
+    hotkeys:        # 弹出菜单的快捷键（Control+0 由 Xime 用于语音输入）
       - "Shift+Control+0"
     abbreviate_options: true
     caption: "【 输入法设置 】"
@@ -36,14 +35,15 @@ patch:
     good_old_caps_lock: true       # true: 在保持 cap 键原有的特征， false: 点击不会切换大小写
     switch_key:
       Caps_Lock: commit_code        # 如果想用 cap 键切换中英文输入，就修改为上面三种的任一一种，否则用 noop
-      Shift_L: commit_code          # macOs 上 shift 键不区别左右，设置参数同上
-      Shift_R: commit_code
+      Shift_L: noop                 # 左 Shift 保留为普通修饰键，不切换中英文
+      Shift_R: commit_code          # 右 Shift 提交原始编码并切换中英文
       Control_L: noop
       Control_R: noop
 
 
   key_binder:
     bindings:
+      - { when: always, accept: Control+period, toggle: ascii_punct } # Ctrl+. 切换中/英文标点
 #      - { when: has_menu, accept: comma, send: 2 }  # 候选2 用逗号选择 （修改的时候不要多加或少加空格，跟前面的对齐就好了）
 #      - { when: has_menu, accept: period, send: 3 } # 候选3 用句号选择
       - { when: has_menu, accept: semicolon, send: 2 }  # 候选2 用分号

@@ -236,6 +236,12 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     private var hasHardwareKeyboard = false
     /** 防止把未被 Rime 消费、回送编辑器的实体键再次路由回输入法。 */
     private var forwardingHardwareKey = false
+    private var hardwareSpacePressActive = false
+    private var hardwareSpaceLongPressTriggered = false
+    private val hardwareSpaceLongPressRunnable = Runnable {
+        hardwareSpaceLongPressTriggered = true
+        startVoiceInput(sticky = false, enableTouchTracking = false)
+    }
     private var floatingWinX = 100
     private var floatingWinY = 300
     
@@ -316,6 +322,49 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
             voiceRecognizedText = "",
             voiceAmplitude = 0f
         )
+    }
+
+    internal fun startVoiceInput(
+        sticky: Boolean,
+        enableTouchTracking: Boolean = false,
+    ): Boolean {
+        if (!SettingsPreferences.isSttEnabled(this)) return false
+        if (!com.kingzcheung.xime.util.PermissionHelper.hasRecordAudioPermission(this)) {
+            Toast.makeText(this, "需要麦克风权限才能使用语音输入", Toast.LENGTH_SHORT).show()
+            com.kingzcheung.xime.util.PermissionHelper.requestRecordAudioPermission(this)
+            return false
+        }
+
+        val state = uiState.value
+        if (state.isVoiceMode) return true
+        uiState.value = state.copy(
+            isVoiceMode = true,
+            voiceSticky = sticky,
+            voiceButtonState = VoiceButtonState(bottomActive = true),
+            voiceRecognizedText = ""
+        )
+        if (!sticky) {
+            keyboardViewModel.enterVoice()
+        }
+        feedbackManager.performVibration()
+        isTrackingVoiceButtons = enableTouchTracking
+        if (enableTouchTracking && ::keyboardContainer.isInitialized) {
+            keyboardContainer.enableVoiceButtonTracking()
+        }
+        voiceRecordingStarted = true
+        voiceRecognitionHandler.startDelayedPreStart(0)
+        voiceRecognitionHandler.startRecognition()
+        return true
+    }
+
+    internal fun toggleStickyVoiceInput(): Boolean {
+        val state = uiState.value
+        return if (state.isVoiceMode) {
+            endVoiceSession()
+            true
+        } else {
+            startVoiceInput(sticky = true)
+        }
     }
     
     private var sharedPrefsListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
@@ -1250,7 +1299,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                         val selectedTextCol = com.kingzcheung.xime.ui.theme.KeyboardThemes.getCandidateSelectedTextColor(state.themeId, isDark)
                         val keyboardBgColor = cardBg
                         val rootTheme = com.kingzcheung.xime.ui.theme.KeyboardThemes.getThemeById(state.themeId)
-                        if (state.isCompact && (cand.candidates.isNotEmpty() || cand.isShowingRecentClipboard || cand.inputText.isNotEmpty())) {
+                        if (state.isCompact && (state.isVoiceMode || cand.candidates.isNotEmpty() || cand.isShowingRecentClipboard || cand.inputText.isNotEmpty())) {
                             HardwareKeyboardCandidateBar(
                                 inputText = cand.inputText,
                                 preeditText = cand.preeditText,
@@ -1261,6 +1310,8 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                                 cursorY = state.cursorY,
                                 cursorVisible = state.cursorVisible,
                                 highlightIndex = highlightIndex.intValue,
+                                isVoiceMode = state.isVoiceMode,
+                                voicePluginName = state.voicePluginName,
                                 cardBackgroundColor = cardBg,
                                 candidateTextColor = candidateTextCol,
                                 activeColor = accentCol,
@@ -1517,6 +1568,22 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         val e = event ?: return super.onKeyDown(keyCode, event)
         if (forwardingHardwareKey) return super.onKeyDown(keyCode, event)
 
+        if (isVoiceToggleShortcut(keyCode, e.metaState) && SettingsPreferences.isSttEnabled(this)) {
+            if (e.repeatCount == 0) {
+                toggleStickyVoiceInput()
+            }
+            return true
+        }
+
+        if (isUnmodifiedHardwareSpace(keyCode, e.metaState) && SettingsPreferences.isSttEnabled(this)) {
+            if (e.repeatCount == 0) {
+                hardwareSpacePressActive = true
+                hardwareSpaceLongPressTriggered = false
+                mainHandler.postDelayed(hardwareSpaceLongPressRunnable, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+            }
+            return true
+        }
+
         val modifierKeyCode = keyCodeToRimeModifierKeyCode(keyCode)
         if (modifierKeyCode != null) {
             // ascii_composer 在修饰键释放时判断单击 Shift/Ctrl/Alt/Super；
@@ -1533,51 +1600,21 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         val mask = androidMetaStateToRimeMask(e.metaState)
         val hasChordModifier = hasRimeChordModifier(mask)
         val hasCommandModifier = hasRimeCommandModifier(mask)
-        val candidates = candidateState.value.candidates
-        if (!hasChordModifier && candidates.isNotEmpty()) {
-            when (keyCode) {
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (candidateState.value.hasNextPage) {
-                        keyRouter.pageDown()
-                        highlightIndex.intValue = 0
-                        return true
-                    }
-                }
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (candidateState.value.hasPrevPage) {
-                        keyRouter.pageUp()
-                        highlightIndex.intValue = 0
-                        return true
-                    }
-                }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    highlightIndex.intValue = (highlightIndex.intValue + 1).coerceAtMost(candidates.lastIndex)
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    highlightIndex.intValue = (highlightIndex.intValue - 1).coerceAtLeast(0)
-                    return true
-                }
-                KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
-                KeyEvent.KEYCODE_DPAD_CENTER -> {
-                    keyRouter.selectCandidate(highlightIndex.intValue)
-                    highlightIndex.intValue = 0
-                    return true
-                }
-            }
-            candidateIndexForHardwareKey(keyCode)?.let { index ->
-                if (index < candidates.size) {
-                    keyRouter.selectCandidate(index)
-                    highlightIndex.intValue = 0
-                    return true
-                }
-            }
+        if (!hasChordModifier && keyCode in setOf(
+                KeyEvent.KEYCODE_SEMICOLON,
+                KeyEvent.KEYCODE_APOSTROPHE,
+                KeyEvent.KEYCODE_LEFT_BRACKET,
+                KeyEvent.KEYCODE_RIGHT_BRACKET,
+            )
+        ) {
+            keyRouter.handleHardwareCandidateShortcut(keyCode, e)
+            return true
         }
-
         val rimeKeyCode = keyCodeToRimeKeyCode(keyCode)
         val specialKey = isRimeSpecialKey(keyCode)
         val shiftSpace = mask and RIME_SHIFT_MASK != 0 && keyCode == KeyEvent.KEYCODE_SPACE
-        if (rimeKeyCode != null && (hasCommandModifier || specialKey || shiftSpace)) {
+        val compositionEditingKey = isCompositionEditingKey(keyCode)
+        if (rimeKeyCode != null && (hasCommandModifier || specialKey || shiftSpace || compositionEditingKey)) {
             // 未被 Rime 绑定消费的 Ctrl/Alt/Meta 组合必须交还目标应用，不能降级成普通字符；
             // Shift+Space 则保留输入法原有的空格兜底。
             val fallbackKey = if (hasCommandModifier || specialKey) null else keyEventToKey(e)
@@ -1586,7 +1623,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                 mask = mask,
                 fallbackKey = fallbackKey,
                 originalEvent = e,
-                forwardIfUnhandled = hasCommandModifier || specialKey,
+                forwardIfUnhandled = hasCommandModifier || specialKey || compositionEditingKey,
             )
             return true
         }
@@ -1602,6 +1639,22 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         val e = event ?: return super.onKeyUp(keyCode, event)
         if (forwardingHardwareKey) return super.onKeyUp(keyCode, event)
+        if (keyCode in setOf(KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_NUMPAD_0) &&
+            SettingsPreferences.isSttEnabled(this)
+        ) {
+            return true
+        }
+        if (hardwareSpacePressActive && keyCode == KeyEvent.KEYCODE_SPACE) {
+            mainHandler.removeCallbacks(hardwareSpaceLongPressRunnable)
+            hardwareSpacePressActive = false
+            if (hardwareSpaceLongPressTriggered) {
+                hardwareSpaceLongPressTriggered = false
+                endVoiceSession()
+            } else {
+                keyRouter.handleKeyPress("space", e.isShiftPressed)
+            }
+            return true
+        }
         val modifierKeyCode = keyCodeToRimeModifierKeyCode(keyCode)
         if (modifierKeyCode != null) {
             keyRouter.handleHardwareModifierKey(
@@ -2066,6 +2119,9 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     }
     
     private fun clearInputState() {
+        mainHandler.removeCallbacks(hardwareSpaceLongPressRunnable)
+        hardwareSpacePressActive = false
+        hardwareSpaceLongPressTriggered = false
         closeToolPanel()
         // 输入会话结束：关闭残留的面板页面（表情/符号等 overlay），
         // 避免下次键盘弹出时在候选栏上方渲染上次的面板背景
@@ -2161,6 +2217,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(hardwareSpaceLongPressRunnable)
         super.onDestroy()
         sharedPrefsListener?.let {
             SettingsPreferences.getPrefsPublic(this).unregisterOnSharedPreferenceChangeListener(it)

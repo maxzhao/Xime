@@ -490,6 +490,18 @@ data class StyleConfig(
 )
 
 @Serializable
+data class WubiPinyinInputConfig(
+    @SerialName("default_ascii_mode")
+    val defaultAsciiMode: Boolean? = null,
+)
+
+@Serializable
+data class InputConfig(
+    @SerialName("wubi86_pinyin")
+    val wubi86Pinyin: WubiPinyinInputConfig? = null,
+)
+
+@Serializable
 data class XimeConfig(
     @SerialName("xime_index")
     val ximeIndex: XimeIndexConfig? = null,
@@ -497,6 +509,8 @@ data class XimeConfig(
     val colorSchemes: Map<String, ColorSchemeEntry>? = null,
     @SerialName("style")
     val style: StyleConfig? = null,
+    @SerialName("input")
+    val input: InputConfig? = null,
     @SerialName("metadata")
     val metadata: MetadataConfig? = null,
 )
@@ -1122,9 +1136,34 @@ object KeysConfigHelper {
             // 这样用户只需在 xime.custom.yaml 中添加自定义背景主题而不会丢失内置主题。
             colorSchemes = mergeColorSchemes(default.colorSchemes, custom.colorSchemes),
             style = mergeStyle(default.style, custom.style),
+            input = mergeInput(default.input, custom.input),
             metadata = custom.metadata ?: default.metadata,
         )
     }
+
+    /** 输入行为字段级深合并：custom 只覆盖显式配置的字段。 */
+    private fun mergeInput(default: InputConfig?, custom: InputConfig?): InputConfig? {
+        if (custom == null) return default
+        if (default == null) return custom
+        val defaultWubi = default.wubi86Pinyin
+        val customWubi = custom.wubi86Pinyin
+        return InputConfig(
+            wubi86Pinyin = when {
+                customWubi == null -> defaultWubi
+                defaultWubi == null -> customWubi
+                else -> WubiPinyinInputConfig(
+                    defaultAsciiMode = customWubi.defaultAsciiMode ?: defaultWubi.defaultAsciiMode,
+                )
+            },
+        )
+    }
+
+    /** 仅供单元测试验证 input 配置解析与字段级合并。 */
+    internal fun parseInputConfigYamlText(yamlText: String): InputConfig? =
+        parseConfig(yamlText)?.input
+
+    internal fun mergeInputForTest(default: InputConfig?, custom: InputConfig?): InputConfig? =
+        mergeInput(default, custom)
 
     /** style 字段级深合并：custom 只覆盖显式配置的字段。 */
     private fun mergeStyle(default: StyleConfig?, custom: StyleConfig?): StyleConfig? {
@@ -1251,6 +1290,10 @@ object KeysConfigHelper {
         val merged = loadMergedConfig(context)
         return merged.style?.darkMode ?: 2
     }
+
+    /** `wubi86_pinyin` 首次使用时的默认中英文模式；持久化状态存在时不使用。 */
+    fun loadWubiPinyinDefaultAsciiMode(context: Context): Boolean =
+        loadMergedConfig(context).input?.wubi86Pinyin?.defaultAsciiMode ?: true
 
     // ── 新公开 API ──
 

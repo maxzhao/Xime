@@ -10,9 +10,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -50,12 +54,14 @@ fun HardwareKeyboardCandidateBar(
     cursorY: Int,
     cursorVisible: Boolean,
     highlightIndex: Int,
+    isVoiceMode: Boolean = false,
+    voicePluginName: String = "",
     cardBackgroundColor: Color,
     candidateTextColor: Color,
     activeColor: Color,
     selectedTextColor: Color = activeColor,
 ) {
-    if (candidates.isEmpty() && inputText.isEmpty()) return
+    if (candidates.isEmpty() && inputText.isEmpty() && !isVoiceMode) return
 
     val density = LocalDensity.current
     val displayText = if (preeditText.isNotEmpty()) preeditText else inputText
@@ -122,6 +128,29 @@ fun HardwareKeyboardCandidateBar(
                     .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 4.dp)
                     .widthIn(max = maxCardWidthDp.dp - 24.dp)
             ) {
+                if (isVoiceMode) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = "语音输入",
+                            tint = activeColor,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = if (voicePluginName.isBlank()) "语音输入" else "语音输入 · $voicePluginName",
+                            fontSize = 13.sp,
+                            color = activeColor,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
                 if (displayText.isNotEmpty()) {
                     Text(
                         text = displayText,

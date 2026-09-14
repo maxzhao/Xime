@@ -43,6 +43,19 @@ class KeyCodeMapperTest {
     }
 
     @Test
+    fun recognizesVoiceHardwareShortcuts() {
+        assertTrue(isVoiceToggleShortcut(KeyEvent.KEYCODE_0, KeyEvent.META_CTRL_LEFT_ON))
+        assertTrue(isVoiceToggleShortcut(KeyEvent.KEYCODE_NUMPAD_0, KeyEvent.META_CTRL_RIGHT_ON))
+        assertFalse(isVoiceToggleShortcut(KeyEvent.KEYCODE_0, KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON))
+        assertFalse(isVoiceToggleShortcut(KeyEvent.KEYCODE_1, KeyEvent.META_CTRL_ON))
+
+        assertTrue(isUnmodifiedHardwareSpace(KeyEvent.KEYCODE_SPACE, 0))
+        assertTrue(isUnmodifiedHardwareSpace(KeyEvent.KEYCODE_SPACE, KeyEvent.META_CAPS_LOCK_ON))
+        assertFalse(isUnmodifiedHardwareSpace(KeyEvent.KEYCODE_SPACE, KeyEvent.META_SHIFT_LEFT_ON))
+        assertFalse(isUnmodifiedHardwareSpace(KeyEvent.KEYCODE_SPACE, KeyEvent.META_CTRL_RIGHT_ON))
+    }
+
+    @Test
     fun mapsShiftedUsKeyboardSymbols() {
         assertEquals("!", keyCodeToKey(KeyEvent.KEYCODE_1, true))
         assertEquals("@", keyCodeToKey(KeyEvent.KEYCODE_2, true))
@@ -71,6 +84,11 @@ class KeyCodeMapperTest {
         assertTrue(isRimeSpecialKey(KeyEvent.KEYCODE_ESCAPE))
         assertTrue(isRimeSpecialKey(KeyEvent.KEYCODE_F24))
         assertFalse(isRimeSpecialKey(KeyEvent.KEYCODE_A))
+        assertTrue(isCompositionEditingKey(KeyEvent.KEYCODE_DEL))
+        assertTrue(isCompositionEditingKey(KeyEvent.KEYCODE_ENTER))
+        assertTrue(isCompositionEditingKey(KeyEvent.KEYCODE_SPACE))
+        assertTrue(isCompositionEditingKey(KeyEvent.KEYCODE_DPAD_LEFT))
+        assertFalse(isCompositionEditingKey(KeyEvent.KEYCODE_A))
     }
 
     @Test
@@ -80,9 +98,7 @@ class KeyCodeMapperTest {
         assertEquals('+'.code, keyCodeToRimeKeyCode(KeyEvent.KEYCODE_NUMPAD_ADD))
         assertEquals('/'.code, keyCodeToRimeKeyCode(KeyEvent.KEYCODE_NUMPAD_DIVIDE))
         assertEquals(0xff0d, keyCodeToRimeKeyCode(KeyEvent.KEYCODE_NUMPAD_ENTER))
-        assertEquals(0, candidateIndexForHardwareKey(KeyEvent.KEYCODE_NUMPAD_1))
-        assertEquals(8, candidateIndexForHardwareKey(KeyEvent.KEYCODE_NUMPAD_9))
-        assertEquals(9, candidateIndexForHardwareKey(KeyEvent.KEYCODE_NUMPAD_0))
-        assertNull(candidateIndexForHardwareKey(KeyEvent.KEYCODE_NUMPAD_ADD))
+        assertEquals('1'.code, keyCodeToRimeKeyCode(KeyEvent.KEYCODE_NUMPAD_1))
+        assertEquals('9'.code, keyCodeToRimeKeyCode(KeyEvent.KEYCODE_NUMPAD_9))
     }
 }

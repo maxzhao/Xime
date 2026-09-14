@@ -4,7 +4,11 @@ Purpose: route to verified behavior specifications and spec-driven change artifa
 
 ## Active Specifications
 
-No project specifications have been added.
+- [`wubi-pinyin-input/spec.md`](wubi-pinyin-input/spec.md): draft behavior contract for `wubi86_pinyin` default mode, physical shortcuts, source-aware Wubi/Pinyin behavior, candidate annotation, and composition editing.
+
+## Draft Changes
+
+- [`changes/complete-wubi-pinyin-input/proposal.md`](changes/complete-wubi-pinyin-input/proposal.md): proposed implementation scope; read with its design, tasks checklist, and delta spec before implementation.
 
 ## Routing Rules
 
