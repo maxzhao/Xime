@@ -28,6 +28,14 @@ fun getGitHash(): String {
 // 获取构建时间已移除：构建时刻会写入 BuildConfig 进而进入 classes.dex，
 // 破坏 F-Droid 可复现构建（不同环境构建时间不同导致产物不一致）。
 
+val supportedAbis = listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+val requestedAbi = providers.gradleProperty("xime.abi").orNull
+require(requestedAbi == null || requestedAbi in supportedAbis) {
+    "Unsupported xime.abi=$requestedAbi; expected one of ${supportedAbis.joinToString()}"
+}
+val packagedAbis = requestedAbi?.let(::listOf) ?: supportedAbis
+val useLocalInstallSigning = providers.gradleProperty("xime.localInstall").orNull?.toBoolean() == true
+
 // 加载签名配置
 val keystorePropertiesFile = rootProject.file("app/keystore.properties")
 val keystoreProperties = Properties()
@@ -51,7 +59,7 @@ android {
 
         // NDK 配置
         ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            abiFilters += packagedAbis
         }
 
         // 构建信息
@@ -88,9 +96,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // 只在本地有 keystore.properties 时才使用签名配置
-            // GitHub Actions 使用自己的签名方式
-            if (keystorePropertiesFile.exists()) {
+            // 本地真机测试显式使用 Android debug key；正式构建仍只读取 release 配置。
+            // APK 必须签名才能安装，xime.localInstall 不用于发布。
+            if (useLocalInstallSigning) {
+                signingConfig = signingConfigs.getByName("debug")
+            } else if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
         }
@@ -152,7 +162,7 @@ android {
         abi {
             isEnable = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            include(*packagedAbis.toTypedArray())
             isUniversalApk = true
         }
     }
