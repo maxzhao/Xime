@@ -46,8 +46,11 @@ data class InputUIState(
     val floatingOffsetX: Int = 0,
     val floatingOffsetY: Int = 0,
     val cursorX: Int = 0,
+    val cursorTopY: Int = 0,
     val cursorY: Int = 0,
     val cursorVisible: Boolean = false,
+    /** 实体键盘快捷键触发的短暂状态提示；由 IME 自绘，避免终端应用抑制系统 Toast。 */
+    val hardwareStatusMessage: String = "",
     val showQuickSendForm: Boolean = false,
     val quickSendFormFocused: Boolean = false,
     /** 快捷发送表单内焦点是否在"触发编码"输入框（false=在文本输入框）；决定按键输入路由目标。 */

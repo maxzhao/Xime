@@ -71,6 +71,38 @@ sealed interface RimeCandidateShortcutDispatch {
 internal fun RimeKeyDispatch.allowsHostFallback(): Boolean = this is RimeKeyDispatch.Unhandled
 internal fun RimeCandidateShortcutDispatch.allowsHostFallback(): Boolean =
     this is RimeCandidateShortcutDispatch.Unhandled
+
+internal enum class UnhandledSpaceResolution {
+    HOST_FALLBACK,
+    CONSUME,
+    COMMIT_FIRST_CANDIDATE,
+}
+
+/**
+ * Rime 的候选菜单可能在首字符后仍处于惰性准备阶段，导致紧随其后的空格暂时返回
+ * unhandled。只要按键前后存在权威 composition，空格都不得泄漏到宿主编辑器。
+ */
+internal fun resolveUnhandledSpace(
+    keycode: Int,
+    mask: Int,
+    hadComposition: Boolean,
+    result: RimeProcessResult,
+): UnhandledSpaceResolution {
+    val disallowedMask = (1 shl 0) or (1 shl 2) or (1 shl 3) or (1 shl 26) or (1 shl 30)
+    if (keycode != ' '.code || mask and disallowedMask != 0) {
+        return UnhandledSpaceResolution.HOST_FALLBACK
+    }
+    if (!hadComposition && result.inputText.isEmpty() && result.candidates.isEmpty()) {
+        return UnhandledSpaceResolution.HOST_FALLBACK
+    }
+    if (result.committedText.isNotEmpty()) return UnhandledSpaceResolution.CONSUME
+    return if (result.candidates.isNotEmpty()) {
+        UnhandledSpaceResolution.COMMIT_FIRST_CANDIDATE
+    } else {
+        UnhandledSpaceResolution.CONSUME
+    }
+}
+
 internal fun decodeUserConfigBoolState(state: Int): Boolean? = when (state) {
     1 -> true
     0 -> false
@@ -362,9 +394,34 @@ class RimeEngine {
         return locked {
             if (nativeIsMaintaining()) return@locked RimeKeyDispatch.Unavailable
             if (!nativeHasSession() && !nativeCreateSession()) return@locked RimeKeyDispatch.Unavailable
+
+            val isPlainSpace = keycode == ' '.code &&
+                mask and ((1 shl 0) or (1 shl 2) or (1 shl 3) or (1 shl 26) or (1 shl 30)) == 0
+            val hadComposition = if (isPlainSpace) {
+                val before = nativeGetComposition()
+                before.input.isNotEmpty() || before.candidates.isNotEmpty()
+            } else {
+                false
+            }
+
             val result = nativeProcessKeyAndGetResult(keycode, mask)
-            if (result.processed) RimeKeyDispatch.Handled(result)
-            else RimeKeyDispatch.Unhandled(result)
+            if (result.processed) return@locked RimeKeyDispatch.Handled(result)
+
+            when (resolveUnhandledSpace(keycode, mask, hadComposition, result)) {
+                UnhandledSpaceResolution.HOST_FALLBACK -> RimeKeyDispatch.Unhandled(result)
+                UnhandledSpaceResolution.CONSUME ->
+                    RimeKeyDispatch.Handled(result.copy(processed = true))
+                UnhandledSpaceResolution.COMMIT_FIRST_CANDIDATE -> {
+                    if (!nativeSelectCandidate(0)) {
+                        RimeKeyDispatch.Handled(result.copy(processed = true))
+                    } else {
+                        val committed = nativeCommit().orEmpty()
+                        RimeKeyDispatch.Handled(
+                            nativeGetProcessResult(true).copy(committedText = committed)
+                        )
+                    }
+                }
+            }
         }
     }
 

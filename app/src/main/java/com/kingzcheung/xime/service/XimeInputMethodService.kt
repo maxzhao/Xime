@@ -1299,7 +1299,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                         val selectedTextCol = com.kingzcheung.xime.ui.theme.KeyboardThemes.getCandidateSelectedTextColor(state.themeId, isDark)
                         val keyboardBgColor = cardBg
                         val rootTheme = com.kingzcheung.xime.ui.theme.KeyboardThemes.getThemeById(state.themeId)
-                        if (state.isCompact && (state.isVoiceMode || cand.candidates.isNotEmpty() || cand.isShowingRecentClipboard || cand.inputText.isNotEmpty())) {
+                        if (state.isCompact && (state.hardwareStatusMessage.isNotEmpty() || state.isVoiceMode || cand.candidates.isNotEmpty() || cand.isShowingRecentClipboard || cand.inputText.isNotEmpty())) {
                             HardwareKeyboardCandidateBar(
                                 inputText = cand.inputText,
                                 preeditText = cand.preeditText,
@@ -1307,9 +1307,11 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                                 hasNextPage = cand.hasNextPage,
                                 hasPrevPage = cand.hasPrevPage,
                                 cursorX = state.cursorX,
+                                cursorTopY = state.cursorTopY,
                                 cursorY = state.cursorY,
                                 cursorVisible = state.cursorVisible,
                                 highlightIndex = highlightIndex.intValue,
+                                statusMessage = state.hardwareStatusMessage,
                                 isVoiceMode = state.isVoiceMode,
                                 voicePluginName = state.voicePluginName,
                                 cardBackgroundColor = cardBg,
@@ -1734,13 +1736,21 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         // （无 composing 时会在光标处插入空串，选中文字时等于删除选区）。
         if (!restarting) {
             inputBoxComposingActive = false
+            // 新目标不能继承上一输入框的光标锚点或候选快照；后续由 Rime 权威状态重建。
+            uiState.value = uiState.value.copy(
+                cursorX = 0,
+                cursorTopY = 0,
+                cursorY = 0,
+                cursorVisible = false,
+            )
+            candidateState.value = CandidateState()
         }
 
         predictionManager.clearCommittedText()
-        // 新输入会话清空 partial commit 累积：外部 UI（如设置页输入框"清除"按钮仅清 Compose
-        // state）会触发 restartInput → 此处重建 T9，若残留累积会被 buildT9DisplayState 拼进
-        // preedit 回灌输入框（2026-08-07 日志实证：清除后 testText 从 '' 回灌为 '几乎'）。
-        t9PartialSegments.clear()
+        if (!restarting) {
+            // 仅新目标清空 partial commit；同一编辑框 restartInput 必须保留当前组合态。
+            t9PartialSegments.clear()
+        }
         debugLog("onStartInput: cleared lastCommittedText")
 
         // 跨进程同步文件日志开关（开关在主进程设置页切换）
@@ -1753,13 +1763,18 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
             // 60MB 词库编译可达 30s+，主线程等待会导致 ANR）。部署完成后
             // initRimeEngine 的流程会自动切换到正确方案，这里只做 UI 状态恢复。
             if (!rimeEngine.isMaintaining()) {
-                val savedSchema = SettingsPreferences.getCurrentSchema(this)
-                val currentSchema = rimeEngine.getCurrentSchema()
-                val availableSchemas = rimeEngine.getAvailableSchemas()
-                debugLog("onStartInput: saved=$savedSchema, current=$currentSchema, available=${availableSchemas.joinToString()}")
-                
-                val actualSchema: String
-                when {
+                if (restarting) {
+                    // 部分应用会在同一编辑框中频繁 restartInput。重新 switchSchema 会清掉
+                    // 正在输入的 Rime composition；这里保留 session，并从权威状态重建 UI。
+                    updateUI()
+                } else {
+                    val savedSchema = SettingsPreferences.getCurrentSchema(this)
+                    val currentSchema = rimeEngine.getCurrentSchema()
+                    val availableSchemas = rimeEngine.getAvailableSchemas()
+                    debugLog("onStartInput: saved=$savedSchema, current=$currentSchema, available=${availableSchemas.joinToString()}")
+
+                    val actualSchema: String
+                    when {
                     savedSchema == HANDWRITING_SCHEMA_ID -> {
                         debugLog("onStartInput: saved schema is handwriting, checking model files")
                         val hwDir = com.kingzcheung.xime.model.ModelStorage.getModelDir(this, "ochwpro")
@@ -1815,13 +1830,14 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                         SettingsPreferences.setCurrentSchema(this, fallbackSchema)
                         actualSchema = fallbackSchema
                     }
-                    else -> actualSchema = savedSchema
+                        else -> actualSchema = savedSchema
+                    }
+                    sessionController.updateSchemaName()
+
+                    // 从 user.yaml 恢复方案选项（中/西、简/繁等，含 ascii_mode）
+                    sessionController.restorePersistedSchemaOptions()
+                    updateUI()
                 }
-                sessionController.updateSchemaName()
-                
-                // 从 user.yaml 恢复方案选项（中/西、简/繁等，含 ascii_mode）
-                sessionController.restorePersistedSchemaOptions()
-                updateUI()
             } else {
                 debugLog("onStartInput: deployment in progress, skipping schema switch")
             }
@@ -1850,31 +1866,34 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
             FileLogger.i(TAG, "onStartInput: skip keyboard reset, restarting=$restarting, rimeAscii=$rimeAscii, ui=${uiState.value.isAsciiMode}")
         }
 
-        // 先重置候选状态到初始值，避免前一 session 的残留状态影响新输入
-        candidateState.value = CandidateState()
+        if (!restarting) {
+            // restartInput 不是新输入会话：重新填充最近剪贴板会覆盖候选，并可能清空
+            // 仍然有效的 Rime composition。仅新目标建立候选和监听状态。
+            setupRecentClipboardCandidates()
+        }
 
-        // 获取最近30秒的剪切板内容
+        attribute?.let { updateEnterKeyText(it) }
+    }
+
+    private fun setupRecentClipboardCandidates() {
         ensureClipboardManagerInitialized()
         try {
             recentClipboardItemsState.value = clipboardManager.getRecentItems(30)
-            // 将最近剪切板内容显示在候选栏
             candidateState.value = candidateState.value.copy(
                 candidates = recentClipboardItemsState.value.map { it.text },
                 candidateComments = emptyList(),
-                isShowingRecentClipboard = true
+                isShowingRecentClipboard = true,
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get recent clipboard items", e)
         }
 
-        // 监听clipboardItems变化，更新候选栏
         clipboardCollectorJob?.cancel()
         clipboardCollectorJob = serviceScope.launch {
             clipboardManager.clipboardItems.collect { _ ->
                 val items = clipboardManager.getRecentItems(30)
                 recentClipboardItemsState.value = items
                 if (items.isNotEmpty()) {
-                    // 清空Rime联想词等
                     rimeEngine.clearComposition()
                     candidateState.value = candidateState.value.copy(
                         candidates = items.map { it.text.take(8) + if (it.text.length > 8) "..." else "" },
@@ -1882,21 +1901,18 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                         inputText = "",
                         isComposing = false,
                         associationCandidates = emptyList(),
-                        isShowingRecentClipboard = true
+                        isShowingRecentClipboard = true,
                     )
                 } else if (candidateState.value.isShowingRecentClipboard) {
-                    // 如果没有recent items，清空候选栏
                     candidateState.value = candidateState.value.copy(
                         candidates = emptyList(),
                         candidateComments = emptyList(),
                         isShowingRecentClipboard = false,
-                        candidateActions = emptyList()
+                        candidateActions = emptyList(),
                     )
                 }
             }
         }
-
-        attribute?.let { updateEnterKeyText(it) }
     }
     
     private val highlightIndex = mutableIntStateOf(0)
@@ -1919,25 +1935,55 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     override fun onUpdateCursorAnchorInfo(info: CursorAnchorInfo) {
         if (!hasHardwareKeyboard) return
         try {
-            val bounds = info.getCharacterBounds(0)
-            if (bounds != null) {
+            // 插入标记才是当前输入光标；characterBounds(0) 是组合串首字符，不能作为
+            // 长组合定位锚点。仅在宿主未提供有效插入标记时回退字符边界。
+            anchorCoords[0] = info.insertionMarkerHorizontal
+            anchorCoords[1] = info.insertionMarkerBottom
+            anchorCoords[2] = info.insertionMarkerHorizontal
+            anchorCoords[3] = info.insertionMarkerTop
+            if (anchorCoords.any { !it.isFinite() }) {
+                val bounds = info.getCharacterBounds(0)
+                if (bounds == null) {
+                    uiState.value = uiState.value.copy(cursorVisible = false)
+                    return
+                }
                 anchorCoords[0] = bounds.left
                 anchorCoords[1] = bounds.bottom
-                anchorCoords[2] = bounds.left
+                anchorCoords[2] = bounds.right
                 anchorCoords[3] = bounds.top
-            } else {
-                anchorCoords[0] = info.insertionMarkerHorizontal
-                anchorCoords[1] = info.insertionMarkerBottom
-                anchorCoords[2] = info.insertionMarkerHorizontal
-                anchorCoords[3] = info.insertionMarkerTop
             }
-            if (anchorCoords.any(Float::isNaN)) return
+            if (anchorCoords.any { !it.isFinite() }) {
+                uiState.value = uiState.value.copy(cursorVisible = false)
+                return
+            }
             info.matrix.mapPoints(anchorCoords)
-            val screenY = anchorCoords[1].toInt().coerceIn(0, resources.displayMetrics.heightPixels)
-            val screenX = anchorCoords[0].toInt().coerceIn(0, resources.displayMetrics.widthPixels)
+            if (anchorCoords.any { !it.isFinite() }) {
+                uiState.value = uiState.value.copy(cursorVisible = false)
+                return
+            }
+            val markerFlags = info.insertionMarkerFlags
+            val explicitlyInvisible = markerFlags and CursorAnchorInfo.FLAG_HAS_INVISIBLE_REGION != 0 &&
+                markerFlags and CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION == 0
+            if (explicitlyInvisible) {
+                uiState.value = uiState.value.copy(cursorVisible = false)
+                return
+            }
+            val screenWidth = resources.displayMetrics.widthPixels
+            val screenHeight = resources.displayMetrics.heightPixels
+            val rawLeft = minOf(anchorCoords[0], anchorCoords[2])
+            val rawRight = maxOf(anchorCoords[0], anchorCoords[2])
+            val rawTop = minOf(anchorCoords[1], anchorCoords[3])
+            val rawBottom = maxOf(anchorCoords[1], anchorCoords[3])
+            val intersectsScreen = rawRight >= 0f && rawLeft <= screenWidth &&
+                rawBottom >= 0f && rawTop <= screenHeight
+            if (!intersectsScreen) {
+                uiState.value = uiState.value.copy(cursorVisible = false)
+                return
+            }
             uiState.value = uiState.value.copy(
-                cursorX = screenX,
-                cursorY = screenY,
+                cursorX = rawLeft.toInt().coerceIn(0, screenWidth),
+                cursorTopY = rawTop.toInt().coerceIn(0, screenHeight),
+                cursorY = rawBottom.toInt().coerceIn(0, screenHeight),
                 cursorVisible = true,
             )
         } catch (e: Exception) {

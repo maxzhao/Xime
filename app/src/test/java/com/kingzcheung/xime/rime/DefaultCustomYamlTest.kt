@@ -61,6 +61,7 @@ class DefaultCustomYamlTest {
         assertEquals(20, extractPageSize(patched))
         assertTrue(patched.contains("Shift_L: noop"))
         assertTrue(patched.contains("Control+period"))
+        assertTrue(patched.contains("Shift+space, toggle: full_shape"))
     }
 
     @Test
@@ -130,6 +131,7 @@ class DefaultCustomYamlTest {
         assertTrue(patched.contains("Shift_L: noop"))
         assertTrue(patched.contains("Shift_R: commit_code"))
         assertTrue(patched.contains("Control+period, toggle: ascii_punct"))
+        assertTrue(patched.contains("Shift+space, toggle: full_shape"))
         assertTrue(patched.contains("accept: semicolon, send: 2"))
         assertTrue(patched.contains("accept: apostrophe, send: 3"))
         assertTrue(patched.contains("accept: bracketleft, send: Page_Up"))

@@ -42,6 +42,59 @@ import kotlin.math.roundToInt
 private const val MAX_VISIBLE_CANDIDATES = 10
 private const val ESTIMATED_CARD_HEIGHT_DP = 180
 
+internal data class HardwareCandidatePosition(val x: Int, val y: Int)
+
+/** 将屏幕光标锚点转换到候选层坐标，并用候选层及卡片真实尺寸严格限制位置。 */
+internal fun calculateHardwareCandidatePosition(
+    containerWidth: Int,
+    containerHeight: Int,
+    viewScreenX: Int,
+    viewScreenY: Int,
+    cursorScreenX: Int,
+    cursorScreenTop: Int,
+    cursorScreenBottom: Int,
+    cursorVisible: Boolean,
+    cardWidth: Int,
+    cardHeight: Int,
+    margin: Int,
+    gap: Int,
+    fallbackTop: Int,
+): HardwareCandidatePosition {
+    fun constrainStart(desired: Int, container: Int, element: Int): Int {
+        val maxStart = (container - element - margin).coerceAtLeast(0)
+        val minStart = margin.coerceAtMost(maxStart)
+        return desired.coerceIn(minStart, maxStart)
+    }
+
+    val safeCardWidth = cardWidth.coerceAtLeast(1)
+    val safeCardHeight = cardHeight.coerceAtLeast(1)
+    val localCursorX = cursorScreenX - viewScreenX
+    val desiredX = if (cursorVisible) {
+        localCursorX - safeCardWidth / 2
+    } else {
+        (containerWidth - safeCardWidth) / 2
+    }
+    val x = constrainStart(desiredX, containerWidth, safeCardWidth)
+
+    val desiredY = if (cursorVisible) {
+        val localTop = cursorScreenTop - viewScreenY
+        val localBottom = cursorScreenBottom - viewScreenY
+        val below = localBottom + gap
+        val above = localTop - gap - safeCardHeight
+        val bottomLimit = containerHeight - margin
+        when {
+            below + safeCardHeight <= bottomLimit -> below
+            above >= margin -> above
+            localTop - margin >= bottomLimit - localBottom -> above
+            else -> below
+        }
+    } else {
+        fallbackTop
+    }
+    val y = constrainStart(desiredY, containerHeight, safeCardHeight)
+    return HardwareCandidatePosition(x, y)
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HardwareKeyboardCandidateBar(
@@ -51,9 +104,11 @@ fun HardwareKeyboardCandidateBar(
     hasNextPage: Boolean,
     hasPrevPage: Boolean,
     cursorX: Int,
+    cursorTopY: Int,
     cursorY: Int,
     cursorVisible: Boolean,
     highlightIndex: Int,
+    statusMessage: String = "",
     isVoiceMode: Boolean = false,
     voicePluginName: String = "",
     cardBackgroundColor: Color,
@@ -61,73 +116,85 @@ fun HardwareKeyboardCandidateBar(
     activeColor: Color,
     selectedTextColor: Color = activeColor,
 ) {
-    if (candidates.isEmpty() && inputText.isEmpty() && !isVoiceMode) return
+    if (candidates.isEmpty() && inputText.isEmpty() && statusMessage.isEmpty() && !isVoiceMode) return
 
     val density = LocalDensity.current
     val displayText = if (preeditText.isNotEmpty()) preeditText else inputText
 
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
-    val screenWidthPx = with(density) { screenWidthDp.dp.toPx() }.roundToInt()
-    val screenHeightPx = with(density) {
+    val fallbackWidthPx = with(density) { screenWidthDp.dp.toPx() }.roundToInt()
+    val fallbackHeightPx = with(density) {
         LocalConfiguration.current.screenHeightDp.dp.toPx()
     }.roundToInt()
 
     val view = LocalView.current
     val viewLoc = remember { IntArray(2) }
     view.getLocationOnScreen(viewLoc)
+    val containerWidthPx = view.width.takeIf { it > 0 } ?: fallbackWidthPx
+    val containerHeightPx = view.height.takeIf { it > 0 } ?: fallbackHeightPx
 
     val marginPx = with(density) { 8.dp.toPx() }.roundToInt()
-    val cardTopMarginPx = with(density) { 16.dp.toPx() }.roundToInt()
+    val cardGapPx = with(density) { 16.dp.toPx() }.roundToInt()
+    val fallbackTopPx = with(density) { 60.dp.toPx() }.roundToInt()
     val estCardHeightPx = with(density) { ESTIMATED_CARD_HEIGHT_DP.dp.toPx() }.roundToInt()
-    val maxCardWidthDp = (screenWidthDp * 0.85f).roundToInt().coerceIn(260, 420)
-    val halfEstPx = with(density) { (maxCardWidthDp / 2).dp.toPx() }.roundToInt()
+    val containerWidthDp = with(density) { containerWidthPx.toDp().value }
+    val maxCardWidthDp = (containerWidthDp * 0.85f).roundToInt()
+        .coerceAtLeast(1)
+        .coerceAtMost(420)
+    val minCardWidthDp = 160.coerceAtMost(maxCardWidthDp)
+    val estCardWidthPx = with(density) { maxCardWidthDp.dp.toPx() }.roundToInt()
 
+    var actualCardWidth by remember { mutableIntStateOf(estCardWidthPx) }
     var actualCardHeight by remember { mutableIntStateOf(estCardHeightPx) }
-
-    val cardXPx = with(density) {
-        val relX = cursorX - viewLoc[0]
-        val maxX = (screenWidthPx - halfEstPx * 2 - marginPx).coerceAtLeast(marginPx)
-        if (cursorVisible && relX > 0) {
-            (relX - halfEstPx).coerceIn(marginPx, maxX)
-        } else {
-            (screenWidthPx - halfEstPx * 2).coerceAtLeast(0) / 2
-        }
-    }
-
-    val cardYPx = with(density) {
-        val maxY = (screenHeightPx - actualCardHeight - marginPx).coerceAtLeast(marginPx)
-        if (cursorVisible && cursorY > 0) {
-            val relY = cursorY - viewLoc[1]
-            if (relY + actualCardHeight + cardTopMarginPx <= screenHeightPx) {
-                (relY + cardTopMarginPx).coerceIn(marginPx, maxY)
-            } else if (relY - actualCardHeight - cardTopMarginPx >= marginPx) {
-                (relY - actualCardHeight - cardTopMarginPx).coerceIn(marginPx, maxY)
-            } else {
-                maxY
-            }
-        } else {
-            with(density) { 60.dp.toPx() }.roundToInt().coerceIn(marginPx, maxY)
-        }
-    }
+    val cardPosition = calculateHardwareCandidatePosition(
+        containerWidth = containerWidthPx,
+        containerHeight = containerHeightPx,
+        viewScreenX = viewLoc[0],
+        viewScreenY = viewLoc[1],
+        cursorScreenX = cursorX,
+        cursorScreenTop = cursorTopY,
+        cursorScreenBottom = cursorY,
+        cursorVisible = cursorVisible,
+        cardWidth = actualCardWidth,
+        cardHeight = actualCardHeight,
+        margin = marginPx,
+        gap = cardGapPx,
+        fallbackTop = fallbackTopPx,
+    )
 
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
         Box(
             modifier = Modifier
-                .offset { IntOffset(cardXPx, cardYPx) }
-                .widthIn(min = 160.dp, max = maxCardWidthDp.dp)
+                .offset { IntOffset(cardPosition.x, cardPosition.y) }
+                .widthIn(min = minCardWidthDp.dp, max = maxCardWidthDp.dp)
                 .wrapContentWidth()
                 .shadow(12.dp, RoundedCornerShape(8.dp))
                 .clip(RoundedCornerShape(8.dp))
                 .background(cardBackgroundColor)
-                .onSizeChanged { actualCardHeight = it.height }
+                .onSizeChanged {
+                    actualCardWidth = it.width
+                    actualCardHeight = it.height
+                }
         ) {
             Column(
                 modifier = Modifier
                     .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 4.dp)
                     .widthIn(max = maxCardWidthDp.dp - 24.dp)
             ) {
+                if (statusMessage.isNotEmpty()) {
+                    Text(
+                        text = statusMessage,
+                        fontSize = 15.sp,
+                        color = activeColor,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                }
+
                 if (isVoiceMode) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),

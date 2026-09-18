@@ -4,4 +4,10 @@
     <string name="subtype_label_pinyin">拼音</string>
     <string name="keyboard_name">曦码输入法</string>
     <string name="ime_service_label">曦码输入法</string>
+    <string name="hardware_mode_chinese">已切换到中文</string>
+    <string name="hardware_mode_english">已切换到英文</string>
+    <string name="hardware_punctuation_chinese">已切换到中文标点</string>
+    <string name="hardware_punctuation_english">已切换到英文标点</string>
+    <string name="hardware_character_width_half">已切换到半角</string>
+    <string name="hardware_character_width_full">已切换到全角</string>
 </resources>

@@ -32,6 +32,35 @@ class RimeCandidateTest {
     }
 
     @Test
+    fun `unhandled plain space never leaks while composition exists`() {
+        val empty = RimeProcessResult(false, "", "", "", emptyArray(), false, false, false)
+        val composing = empty.copy(inputText = "w")
+        val candidate = RimeCandidate("我", "")
+        val withCandidate = composing.copy(candidates = arrayOf(candidate))
+
+        assertEquals(
+            UnhandledSpaceResolution.HOST_FALLBACK,
+            resolveUnhandledSpace(' '.code, 0, hadComposition = false, result = empty),
+        )
+        assertEquals(
+            UnhandledSpaceResolution.CONSUME,
+            resolveUnhandledSpace(' '.code, 0, hadComposition = true, result = empty),
+        )
+        assertEquals(
+            UnhandledSpaceResolution.CONSUME,
+            resolveUnhandledSpace(' '.code, 0, hadComposition = false, result = composing),
+        )
+        assertEquals(
+            UnhandledSpaceResolution.COMMIT_FIRST_CANDIDATE,
+            resolveUnhandledSpace(' '.code, 0, hadComposition = true, result = withCandidate),
+        )
+        assertEquals(
+            UnhandledSpaceResolution.HOST_FALLBACK,
+            resolveUnhandledSpace(' '.code, 1, hadComposition = true, result = withCandidate),
+        )
+    }
+
+    @Test
     fun `only authoritative unhandled dispatch allows host fallback`() {
         val result = RimeProcessResult(false, "", "", "", emptyArray(), false, false, false)
         assertTrue(RimeKeyDispatch.Unhandled(result).result === result)

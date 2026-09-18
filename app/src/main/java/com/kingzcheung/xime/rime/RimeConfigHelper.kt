@@ -403,6 +403,7 @@ object RimeConfigHelper {
         }
         val owned = listOf(
             "Control+period" to "      - { when: always, accept: Control+period, toggle: ascii_punct }",
+            "Shift+space" to "      - { when: always, accept: Shift+space, toggle: full_shape }",
             "accept: semicolon" to "      - { when: has_menu, accept: semicolon, send: 2 }",
             "accept: apostrophe" to "      - { when: has_menu, accept: apostrophe, send: 3 }",
             "accept: bracketleft" to "      - { when: has_menu, accept: bracketleft, send: Page_Up }",

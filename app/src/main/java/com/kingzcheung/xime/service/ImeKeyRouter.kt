@@ -3,6 +3,8 @@ package com.kingzcheung.xime.service
 import android.util.Log
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
+import android.widget.Toast
+import com.kingzcheung.xime.R
 import com.kingzcheung.xime.association.AssociationManager
 import com.kingzcheung.xime.keyboard.OverlayRoute
 import com.kingzcheung.xime.rime.CandidateSelectionRef
@@ -18,6 +20,8 @@ import com.kingzcheung.xime.util.FileLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -36,10 +40,57 @@ internal fun shouldUseGenericSoftCompositionRoute(
 ): Boolean = key in setOf("enter", "space") &&
     !isT9 && !toolPanelInputFocused && !showQuickSendForm && !isPanelLayout
 
+internal enum class HardwareOptionShortcut(val optionName: String) {
+    PUNCTUATION("ascii_punct"),
+    CHARACTER_WIDTH("full_shape"),
+}
+
+/** 识别需要状态提示的实体键盘快捷键；额外的命令修饰键不匹配。 */
+internal fun hardwareOptionShortcut(keyCode: Int, metaState: Int): HardwareOptionShortcut? {
+    val ctrl = metaState and (
+        KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON or KeyEvent.META_CTRL_RIGHT_ON
+    ) != 0
+    val shift = metaState and (
+        KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON or KeyEvent.META_SHIFT_RIGHT_ON
+    ) != 0
+    val altOrMeta = metaState and (
+        KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON or KeyEvent.META_ALT_RIGHT_ON or
+            KeyEvent.META_META_ON or KeyEvent.META_META_LEFT_ON or KeyEvent.META_META_RIGHT_ON
+    ) != 0
+    return when {
+        keyCode == KeyEvent.KEYCODE_PERIOD && ctrl && !shift && !altOrMeta ->
+            HardwareOptionShortcut.PUNCTUATION
+        keyCode == KeyEvent.KEYCODE_SPACE && shift && !ctrl && !altOrMeta ->
+            HardwareOptionShortcut.CHARACTER_WIDTH
+        else -> null
+    }
+}
+
+/** 只报告实体右 Shift 按下到释放之间真实发生的中英文状态变化。 */
+internal class RightShiftModeChangeTracker {
+    private var modeOnKeyDown: Boolean? = null
+
+    fun observe(keyCode: Int, isRelease: Boolean, isAsciiMode: Boolean?): Boolean? {
+        if (keyCode != RIME_KEY_SHIFT_R) return null
+        if (!isRelease) {
+            modeOnKeyDown = isAsciiMode
+            return null
+        }
+        val previousMode = modeOnKeyDown
+        modeOnKeyDown = null
+        return isAsciiMode?.takeIf { previousMode != null && it != previousMode }
+    }
+}
+
+private const val HARDWARE_STATUS_DURATION_MS = 1_200L
+
 internal class ImeKeyRouter(private val service: XimeInputMethodService) {
 
     /** 在 key-processing 线程维护：按下被 Rime 消费的修饰键不应再回送目标应用。 */
     private val consumedModifierKeys = mutableSetOf<Int>()
+    private val rightShiftModeChangeTracker = RightShiftModeChangeTracker()
+    private var hardwareStateToast: Toast? = null
+    private var hardwareStatusClearJob: Job? = null
 
     /**
      * 候选词变换（hotPath 插件能力）+ 发送 UI 更新。
@@ -81,6 +132,14 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                 sendTransformedResult(result)
                 persistChangedOptions(originalEvent)
             }
+            val changedAsciiMode = rightShiftModeChangeTracker.observe(
+                keyCode = keyCode,
+                isRelease = isRelease,
+                isAsciiMode = result?.isAsciiMode,
+            )
+            if (changedAsciiMode != null) {
+                withContext(Dispatchers.Main) { showHardwareModeToast(changedAsciiMode) }
+            }
 
             val consumed = if (keyCode == RIME_KEY_SHIFT_R) {
                 // ascii_composer 在 release 时完成副作用但返回 kNoop；右 Shift 仍由 IME 独占。
@@ -113,6 +172,8 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         forwardIfUnhandled: Boolean,
     ) {
         postRimeJob {
+            val optionShortcut = hardwareOptionShortcut(originalEvent.keyCode, originalEvent.metaState)
+            val optionBefore = optionShortcut?.let { service.rimeEngine.getOption(it.optionName) }
             when (val dispatch = service.rimeEngine.dispatchKey(keyCode, mask)) {
                 is RimeKeyDispatch.Handled -> {
                     val result = dispatch.result
@@ -121,6 +182,18 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                     }
                     sendTransformedResult(result)
                     persistChangedOptions(originalEvent)
+                    if (optionShortcut != null) {
+                        val optionAfter = service.rimeEngine.getOption(optionShortcut.optionName)
+                        if (optionAfter != optionBefore) {
+                            service.sessionController.persistSchemaOption(
+                                optionShortcut.optionName,
+                                optionAfter,
+                            )
+                            withContext(Dispatchers.Main) {
+                                showHardwareOptionToast(optionShortcut, optionAfter)
+                            }
+                        }
+                    }
                 }
                 is RimeKeyDispatch.Unhandled -> {
                     if (fallbackKey != null) {
@@ -190,11 +263,39 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         }
     }
 
-    private fun persistChangedOptions(event: KeyEvent) {
-        if (event.keyCode == KeyEvent.KEYCODE_PERIOD && event.isCtrlPressed) {
-            service.sessionController.persistSchemaOption(
-                "ascii_punct", service.rimeEngine.getOption("ascii_punct"))
+    private fun showHardwareModeToast(isAsciiMode: Boolean) {
+        showHardwareStateToast(
+            if (isAsciiMode) R.string.hardware_mode_english else R.string.hardware_mode_chinese
+        )
+    }
+
+    private fun showHardwareOptionToast(shortcut: HardwareOptionShortcut, enabled: Boolean) {
+        val message = when (shortcut) {
+            HardwareOptionShortcut.PUNCTUATION ->
+                if (enabled) R.string.hardware_punctuation_english else R.string.hardware_punctuation_chinese
+            HardwareOptionShortcut.CHARACTER_WIDTH ->
+                if (enabled) R.string.hardware_character_width_full else R.string.hardware_character_width_half
         }
+        showHardwareStateToast(message)
+    }
+
+    private fun showHardwareStateToast(message: Int) {
+        val text = service.getString(message)
+        hardwareStateToast?.cancel()
+        hardwareStateToast = Toast.makeText(service, text, Toast.LENGTH_SHORT).also { it.show() }
+
+        // 系统 Toast 在 Termux 等终端场景可能被抑制；同时由 IME 的实体键盘层自绘提示。
+        hardwareStatusClearJob?.cancel()
+        service.uiState.value = service.uiState.value.copy(hardwareStatusMessage = text)
+        hardwareStatusClearJob = service.serviceScope.launch(Dispatchers.Main) {
+            delay(HARDWARE_STATUS_DURATION_MS)
+            if (service.uiState.value.hardwareStatusMessage == text) {
+                service.uiState.value = service.uiState.value.copy(hardwareStatusMessage = "")
+            }
+        }
+    }
+
+    private fun persistChangedOptions(event: KeyEvent) {
         if (event.keyCode == KeyEvent.KEYCODE_SHIFT_RIGHT && event.action == KeyEvent.ACTION_UP) {
             service.sessionController.persistSchemaOption(
                 "ascii_mode", service.rimeEngine.isAsciiMode())

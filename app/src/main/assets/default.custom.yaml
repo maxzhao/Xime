@@ -44,6 +44,7 @@ patch:
   key_binder:
     bindings:
       - { when: always, accept: Control+period, toggle: ascii_punct } # Ctrl+. 切换中/英文标点
+      - { when: always, accept: Shift+space, toggle: full_shape } # Shift+Space 切换半角/全角
 #      - { when: has_menu, accept: comma, send: 2 }  # 候选2 用逗号选择 （修改的时候不要多加或少加空格，跟前面的对齐就好了）
 #      - { when: has_menu, accept: period, send: 3 } # 候选3 用句号选择
       - { when: has_menu, accept: semicolon, send: 2 }  # 候选2 用分号
