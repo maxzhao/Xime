@@ -1,7 +1,7 @@
 name: 支持 Termux 语音输入安全上屏
 description: 为 TYPE_NULL 终端提供 UI-only partial 与单次原样 final 提交，避免 composing 回删和命令格式破坏
-status: pending
+status: done
 priority: medium
 dependencies: []
 created: "2026-09-19T13:51:48.000Z"
-updated: "2026-09-19T13:51:48.000Z"
+updated: "2026-09-19T15:28:56.000Z"

@@ -1,14 +1,18 @@
 package com.kingzcheung.xime.service
 
 import android.content.Context
+import android.os.Handler
+import android.util.Log
 import android.view.inputmethod.InputConnection
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.speech.RecognitionState
+import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mock
+import org.mockito.MockedStatic
 import org.mockito.Mockito.*
 import org.mockito.junit.MockitoJUnitRunner
 
@@ -21,16 +25,38 @@ class VoiceRecognitionHandlerTest {
     @Mock
     private lateinit var mockInputConnection: InputConnection
 
+    @Mock
+    private lateinit var mockHandler: Handler
+
     private lateinit var handler: VoiceRecognitionHandler
+    private lateinit var logMock: MockedStatic<Log>
+    private var scheduledRawCommit: Runnable? = null
 
     @Before
     fun setup() {
+        logMock = mockStatic(Log::class.java)
+        scheduledRawCommit = null
+        doAnswer {
+            scheduledRawCommit = it.getArgument(0)
+            true
+        }.`when`(mockHandler).postDelayed(any(Runnable::class.java), anyLong())
+        doAnswer {
+            if (scheduledRawCommit === it.getArgument<Runnable>(0)) {
+                scheduledRawCommit = null
+            }
+            null
+        }.`when`(mockHandler).removeCallbacks(any(Runnable::class.java))
         handler = VoiceRecognitionHandler(
             context = mockContext,
             onStateChanged = {},
             getState = { InputUIState() },
             getInputConnection = { mockInputConnection }
         )
+    }
+
+    @After
+    fun tearDown() {
+        logMock.close()
     }
 
     @Test
@@ -151,5 +177,70 @@ class VoiceRecognitionHandlerTest {
         
         assertEquals("", lastPartialText)
         assertEquals("", accumulatedText.toString())
+    }
+
+    @Test
+    fun `raw target shows partial then auto commits once after pause`() {
+        var state = InputUIState()
+        val rawHandler = VoiceRecognitionHandler(
+            context = mockContext,
+            onStateChanged = { state = it },
+            getState = { state },
+            getInputConnection = { mockInputConnection },
+            isRawInputTarget = { true },
+            mainHandlerFactory = { mockHandler }
+        )
+
+        rawHandler.handlePartialResult("git status")
+
+        assertEquals("git status", state.voiceRecognizedText)
+        verify(mockInputConnection, never()).setComposingText(anyString(), anyInt())
+        assertNotNull(scheduledRawCommit)
+
+        scheduledRawCommit!!.run()
+        assertEquals("", state.voiceRecognizedText)
+        rawHandler.handleSpeechResult("git status")
+
+        verify(mockInputConnection, times(1)).commitText("git status", 1)
+        verify(mockInputConnection, never()).finishComposingText()
+        verify(mockInputConnection, never()).deleteSurroundingText(anyInt(), anyInt())
+    }
+
+    @Test
+    fun `raw target fallback commits once and suppresses late final`() {
+        val rawHandler = VoiceRecognitionHandler(
+            context = mockContext,
+            onStateChanged = {},
+            getState = { InputUIState() },
+            getInputConnection = { mockInputConnection },
+            isRawInputTarget = { true },
+            mainHandlerFactory = { mockHandler }
+        )
+
+        rawHandler.handlePartialResult("git status")
+        rawHandler.commitPendingOnRelease()
+        rawHandler.handleSpeechResult("git status")
+
+        verify(mockInputConnection, times(1)).commitText("git status", 1)
+    }
+
+    @Test
+    fun `rich target keeps composing and punctuation behavior`() {
+        var state = InputUIState()
+        val richHandler = VoiceRecognitionHandler(
+            context = mockContext,
+            onStateChanged = { state = it },
+            getState = { state },
+            getInputConnection = { mockInputConnection },
+            mainHandlerFactory = { mockHandler }
+        )
+
+        richHandler.handlePartialResult("你好")
+        richHandler.handleSpeechResult("你好")
+
+        verify(mockInputConnection).setComposingText("你好", 1)
+        verify(mockInputConnection).finishComposingText()
+        verify(mockInputConnection).commitText("，", 1)
+        verify(mockHandler, never()).postDelayed(any(Runnable::class.java), anyLong())
     }
 }

@@ -9,7 +9,7 @@
 - In scope:
   - Classify `InputType.TYPE_NULL` as a raw/limited voice-output target at the IME service boundary.
   - Keep partial ASR results visible in Xime's voice UI without writing composing text to a raw target.
-  - Commit each accepted final result, or the existing timeout fallback partial result, once through `InputConnection.commitText`.
+  - Commit only the uncommitted raw text after one second without a newer partial, on an accepted final, or on explicit stop through `InputConnection.commitText`.
   - Preserve spaces returned by ASR and suppress Xime's heuristic punctuation in raw targets.
   - Add focused regression coverage and validate on Termux.
   - Converge the linked draft spec after implementation and validation.
@@ -54,10 +54,10 @@
 ## Approach
 
 1. Determine raw-target mode from the current `EditorInfo` using exact `InputType.TYPE_NULL`, and expose that decision to `VoiceRecognitionHandler` through the narrow existing service/handler boundary.
-2. In raw-target mode, retain partial text for voice UI and timeout fallback but do not call `setComposingText` or mark host composing state.
-3. In raw-target mode, commit a nonblank final/fallback result exactly once with `commitText(text, 1)`; do not call `finishComposingText`, `deleteSurroundingText`, remove internal spaces, or append heuristic punctuation. Preserve duplicate-final and abandoned-session guards.
+2. In raw-target mode, retain uncommitted partial text for the compact floating card but do not call `setComposingText` or mark host composing state.
+3. Restart a raw-only one-second pause timer for each partial update. On pause, accepted final, or explicit stop, commit only the uncommitted suffix with `commitText(text, 1)`, clear the floating preview, and keep sticky voice active after pause/final. Do not call `finishComposingText`, `deleteSurroundingText`, remove internal spaces, or append heuristic punctuation. Preserve duplicate-final and abandoned-session guards.
 4. Leave the existing rich-editor path unchanged.
-5. Add focused tests for raw partial behavior, exact one-shot raw final/fallback commit, and preservation of the rich-editor path.
+5. Add focused tests for raw partial preview, pause scheduling/commit, cumulative-result deduplication, explicit-stop commit, and preservation of the rich-editor path without a raw pause timer.
 6. Run the closest unit tests and debug assembly, then manually verify one spoken command in Termux and one ordinary text-field dictation. Record evidence and reconcile the draft spec before task completion.
 
 ## Decisions
@@ -67,8 +67,8 @@
   - Rationale: matches Android's declared limited-input contract and covers Termux without hardcoded package identity.
   - Rejected alternative: checking `com.termux` or maintaining terminal-app allowlists.
 - Decision: no live host composing for raw targets.
-  - Choice: show partial results only in Xime UI and write once on final/fallback.
-  - Rationale: avoids terminal PTY rewrites and Backspace-based correction.
+  - Choice: show partial results in Xime's compact floating card and commit pending text after a one-second pause, accepted final, or explicit stop.
+  - Rationale: provides visible dictation and automatic phrase commits without terminal PTY rewrites or Backspace-based correction; the timer is gated by exact `TYPE_NULL`.
   - Rejected alternative: continue composing then attempt delete-and-replace.
 - Decision: terminal-safe text preservation.
   - Choice: preserve ASR spaces and do not add Xime heuristic punctuation in raw mode.
@@ -88,8 +88,8 @@
 
 - Risk: raw-mode changes accidentally alter ordinary EditText dictation.
   - Failure response: gate only exact `TYPE_NULL` and retain a rich-editor regression assertion/manual check.
-- Risk: final and timeout callbacks duplicate terminal text.
-  - Failure response: preserve and test existing duplicate-final/session-abandon guards.
+- Risk: cumulative partial/final callbacks repeat text already committed by the pause path.
+  - Failure response: track the committed raw prefix and test pause/final/explicit-stop deduplication plus session-abandon guards.
 - Risk: an ASR backend emits blank results.
   - Failure response: keep blank-result rejection; never fabricate command text.
 - Risk: the execution baseline differs between `v2.8.0` and `main`.
@@ -98,7 +98,7 @@
 ## Acceptance Criteria
 
 - [ ] In a `TYPE_NULL` target, partial ASR text appears in Xime's voice UI and no host composing operation is issued.
-- [ ] A nonblank final or timeout-fallback result is committed exactly once to the raw target.
+- [ ] Nonblank raw text is committed exactly once after a one-second pause, accepted final, or explicit stop; cumulative callbacks do not repeat committed prefixes.
 - [ ] Raw-target output preserves spaces and does not receive Xime heuristic punctuation.
 - [ ] Raw-target voice output performs no surrounding-text read, delete-and-replace, or composing finalization as part of result delivery.
 - [ ] Ordinary rich text fields retain existing partial composing, finalization, normalization, punctuation, duplicate suppression, and session-abandon behavior.
@@ -107,7 +107,7 @@
 
 ## Validation Plan
 
-- Command/check: run the closest focused voice-handler unit test task available on the execution baseline.
+- Command/check: run focused voice-handler tests covering raw pause scheduling/commit, explicit stop, cumulative-result deduplication, and no timer in rich editors.
 - Command/check: `./gradlew :app:testDebugUnitTest`.
 - Command/check: `./gradlew :app:assembleDebug`.
 - Expected result: all commands pass; no standard-editor regression.

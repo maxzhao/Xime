@@ -22,10 +22,14 @@ class VoiceRecognitionHandler(
     private val onAmplitudeChanged: (Float) -> Unit = {},
     private val onSpectrumChanged: (FloatArray) -> Unit = {},
     /** 语音向输入框写入 composing 文本时回调（标记 composing 区域存在，供 endComposingInputBox 判断）。 */
-    private val onComposingWritten: () -> Unit = {}
+    private val onComposingWritten: () -> Unit = {},
+    /** TYPE_NULL 等受限宿主不支持富文本 composing/回删改写，只能一次性提交最终文本。 */
+    private val isRawInputTarget: () -> Boolean = { false },
+    private val mainHandlerFactory: () -> Handler = { Handler(Looper.getMainLooper()) }
 ) {
     companion object {
         private const val TAG = "VoiceRecognition"
+        private const val RAW_PAUSE_COMMIT_DELAY_MS = 1000L
     }
 
     private lateinit var speechRecognitionManager: SpeechRecognitionManager
@@ -75,7 +79,7 @@ class VoiceRecognitionHandler(
         }
     }
 
-    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+    private val mainHandler by lazy { mainHandlerFactory() }
     private val delayedPreStartRunnable = Runnable {
         if (::speechRecognitionManager.isInitialized) {
             speechRecognitionManager.startPreStart()
@@ -105,8 +109,15 @@ class VoiceRecognitionHandler(
             return
         }
 
-        textBeforeVoiceInput = getInputConnection()?.getTextBeforeCursor(1000, 0)?.toString() ?: ""
-        textLengthBeforeVoiceInput = textBeforeVoiceInput.length
+        if (isRawInputTarget()) {
+            cancelRawPauseCommit()
+            rawCommittedPartial = ""
+            textBeforeVoiceInput = ""
+            textLengthBeforeVoiceInput = 0
+        } else {
+            textBeforeVoiceInput = getInputConnection()?.getTextBeforeCursor(1000, 0)?.toString() ?: ""
+            textLengthBeforeVoiceInput = textBeforeVoiceInput.length
+        }
 
         val providerName = resolveProviderName()
         onStateChanged(getState().copy(voicePluginName = providerName))
@@ -123,6 +134,7 @@ class VoiceRecognitionHandler(
     }
 
     fun release() {
+        cancelRawPauseCommit()
         if (::speechRecognitionManager.isInitialized) {
             speechRecognitionManager.release()
         }
@@ -155,23 +167,41 @@ class VoiceRecognitionHandler(
     private var smoothedSpectrum = FloatArray(16)
     // 抬起时已提交当前识别文本后，置真以忽略随后可能迟到的重复最终结果
     private var suppressDuplicateFinal = false
+    // TYPE_NULL 会话已自动提交的 partial 前缀；后续累计 partial 只展示/提交新增部分。
+    private var rawCommittedPartial = ""
+    private val rawPauseCommitRunnable = Runnable { commitRawPendingAfterPause() }
     // 输入法窗口隐藏等场景：丢弃本会话，迟到结果不得写入任何输入框
     private var sessionAbandoned = false
     private var errorToast: Toast? = null
 
     /** 输入法隐藏/切换输入框时调用：丢弃当前会话的未识别文本，忽略迟到的最终结果 */
     fun abandonSession() {
+        cancelRawPauseCommit()
         sessionAbandoned = true
         lastPartialText = ""
+        rawCommittedPartial = ""
     }
 
     // 语音按钮长按抬起时调用：立即提交当前已识别的文本（不依赖可能被断连竞态吞掉的异步最终结果）
     fun commitPendingOnRelease() {
         if (sessionAbandoned) return
+        cancelRawPauseCommit()
         val ic = getInputConnection()
         val partial = lastPartialText
         Log.d(TAG, "commitPendingOnRelease: ic=${ic != null}, partial='$partial', suppress=$suppressDuplicateFinal")
         if (ic == null) return
+        if (isRawInputTarget()) {
+            val pending = pendingRawText(partial)
+            if (pending.isNotBlank()) {
+                ic.commitText(pending, 1)
+                rawCommittedPartial = partial
+            }
+            // 即使停顿时已自动提交完，也要忽略 stop 后迟到的同段 final。
+            suppressDuplicateFinal = partial.isNotBlank() || rawCommittedPartial.isNotBlank()
+            lastPartialText = ""
+            onStateChanged(getState().copy(voiceRecognizedText = ""))
+            return
+        }
         if (partial.isEmpty()) return
         val punctuatedText = addPunctuation(partial)
         commitFinal(ic, punctuatedText, partial)
@@ -179,7 +209,34 @@ class VoiceRecognitionHandler(
         lastPartialText = ""
     }
 
-    private fun handleSpeechResult(text: String) {
+    private fun cancelRawPauseCommit() {
+        mainHandler.removeCallbacks(rawPauseCommitRunnable)
+    }
+
+    /** 返回 TYPE_NULL 当前累计结果中尚未写入宿主的部分。 */
+    private fun pendingRawText(text: String): String {
+        if (rawCommittedPartial.isEmpty()) return text
+        if (text.startsWith(rawCommittedPartial)) {
+            return text.substring(rawCommittedPartial.length)
+        }
+        // ASR 开始新一句时 partial 通常从头计数；不能把上一句前缀带入新一句。
+        rawCommittedPartial = ""
+        return text
+    }
+
+    private fun commitRawPendingAfterPause() {
+        if (sessionAbandoned || !isRawInputTarget()) return
+        val partial = lastPartialText
+        val pending = pendingRawText(partial)
+        if (pending.isBlank()) return
+        val ic = getInputConnection() ?: return
+        ic.commitText(pending, 1)
+        rawCommittedPartial = partial
+        onStateChanged(getState().copy(voiceRecognizedText = ""))
+        Log.d(TAG, "TYPE_NULL pause commit: '$pending'")
+    }
+
+    internal fun handleSpeechResult(text: String) {
         Log.d(TAG, "Speech result (final): $text")
 
         if (sessionAbandoned) {
@@ -197,11 +254,24 @@ class VoiceRecognitionHandler(
             return
         }
 
-        val cleanText = text.replace(" ", "")
         val ic = getInputConnection()
-        if (ic != null && cleanText.isNotEmpty() && !cleanText.startsWith("错误:")) {
-            val punctuatedText = addPunctuation(cleanText)
-            commitFinal(ic, punctuatedText, lastPartialText)
+        if (isRawInputTarget()) {
+            cancelRawPauseCommit()
+            val pending = pendingRawText(text)
+            if (ic != null && pending.isNotBlank() && !text.startsWith("错误:")) {
+                ic.commitText(pending, 1)
+                rawCommittedPartial = text
+            }
+            lastPartialText = ""
+            onStateChanged(getState().copy(voiceRecognizedText = ""))
+            // TYPE_NULL 常驻语音按句 final 后继续监听；Ctrl+0/普通按键仍可显式结束会话。
+            if (getState().isVoiceMode) return
+        } else {
+            val cleanText = text.replace(" ", "")
+            if (ic != null && cleanText.isNotEmpty() && !cleanText.startsWith("错误:")) {
+                val punctuatedText = addPunctuation(cleanText)
+                commitFinal(ic, punctuatedText, lastPartialText)
+            }
         }
         lastPartialText = ""
         onVoiceComplete()
@@ -245,16 +315,28 @@ class VoiceRecognitionHandler(
         }
     }
 
-    private fun handlePartialResult(text: String) {
+    internal fun handlePartialResult(text: String) {
         if (sessionAbandoned || suppressDuplicateFinal) return
         if (text == lastPartialText) return
         lastPartialText = text
         Log.d(TAG, "Speech result (partial): $text")
-        
-        // 过滤掉空格，避免显示空白
+
+        if (isRawInputTarget()) {
+            cancelRawPauseCommit()
+            val pending = pendingRawText(text)
+            if (pending.isBlank()) {
+                onStateChanged(getState().copy(voiceRecognizedText = ""))
+                return
+            }
+            onStateChanged(getState().copy(voiceRecognizedText = pending))
+            mainHandler.postDelayed(rawPauseCommitRunnable, RAW_PAUSE_COMMIT_DELAY_MS)
+            return
+        }
+
+        // 普通文本框保持现有行为：过滤空格后把 partial 写入 composing 区域。
         val cleanText = text.replace(" ", "")
         if (cleanText.isEmpty()) return
-        
+
         val ic = getInputConnection()
         if (ic != null) {
             onComposingWritten()
@@ -276,6 +358,8 @@ class VoiceRecognitionHandler(
     private fun handleSpeechError(error: String, userVisible: Boolean) {
         Log.e(TAG, "Speech error: $error")
         FileLogger.e(TAG, "Speech error: $error")
+        cancelRawPauseCommit()
+        rawCommittedPartial = ""
         lastPartialText = ""
         if (userVisible && error.isNotBlank()) {
             errorToast?.cancel()

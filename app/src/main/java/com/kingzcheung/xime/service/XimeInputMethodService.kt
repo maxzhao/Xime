@@ -2,6 +2,7 @@ package com.kingzcheung.xime.service
 
 import android.content.Intent
 import android.inputmethodservice.InputMethodService
+import android.text.InputType
 import android.os.Build
 import android.os.Handler
 import android.os.SystemClock
@@ -301,7 +302,8 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         onSpectrumChanged = { spectrum ->
             voiceSpectrumState.value = spectrum
         },
-        onComposingWritten = { markInputBoxComposing() }
+        onComposingWritten = { markInputBoxComposing() },
+        isRawInputTarget = { currentInputEditorInfo?.inputType == InputType.TYPE_NULL }
     )
 
     /**
@@ -1303,12 +1305,16 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                         val rootTheme = com.kingzcheung.xime.ui.theme.KeyboardThemes.getThemeById(state.themeId)
                         if (state.isCompact) {
                             if (state.isVoiceMode || cand.candidates.isNotEmpty() || cand.isShowingRecentClipboard || cand.inputText.isNotEmpty()) {
+                                // TYPE_NULL（如 Termux）不把 partial 写入宿主；改在实体键盘浮框中实时预览。
+                                // 普通编辑器仍使用原有 composing/候选显示路径。
+                                val rawVoiceTarget = state.isVoiceMode &&
+                                    currentInputEditorInfo?.inputType == InputType.TYPE_NULL
                                 HardwareKeyboardCandidateBar(
-                                    inputText = cand.inputText,
-                                    preeditText = cand.preeditText,
-                                    candidates = cand.candidates,
-                                    hasNextPage = cand.hasNextPage,
-                                    hasPrevPage = cand.hasPrevPage,
+                                    inputText = if (rawVoiceTarget) state.voiceRecognizedText else cand.inputText,
+                                    preeditText = if (rawVoiceTarget) "" else cand.preeditText,
+                                    candidates = if (rawVoiceTarget) emptyList() else cand.candidates,
+                                    hasNextPage = if (rawVoiceTarget) false else cand.hasNextPage,
+                                    hasPrevPage = if (rawVoiceTarget) false else cand.hasPrevPage,
                                     cursorX = state.cursorX,
                                     cursorTopY = state.cursorTopY,
                                     cursorY = state.cursorY,
