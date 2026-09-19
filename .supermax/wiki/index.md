@@ -4,7 +4,7 @@ Purpose: route to curated, reusable knowledge verified against the current repos
 
 ## Topics
 
-No synthesized topic notes have been added.
+- [[manual-github-release|Xime 手动 GitHub Release 发布规范]]：手动构建、测试签名、五种 APK 资产校验、draft 发布及失败恢复流程；准备或审查 GitHub Release 时读取。
 
 ## Routing Rules
 

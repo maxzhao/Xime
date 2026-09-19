@@ -9,6 +9,7 @@ Purpose: route to verified behavior specifications and spec-driven change artifa
 - [`extension-dictionary-management/spec.md`](extension-dictionary-management/spec.md): draft contract for the fixed catalog, download conversion, enable/disable/delete operations, serialized deployment and settings UI.
 - [`ime-session-lifecycle/spec.md`](ime-session-lifecycle/spec.md): draft contract for new-target initialization, same-target `restartInput` preservation, recent-clipboard initialization and session cleanup.
 - [`physical-keyboard-input/spec.md`](physical-keyboard-input/spec.md): draft contract for physical-key translation/routing, candidate shortcuts, mode and voice shortcuts, cursor-anchored candidates and transient status.
+- [`voice-input-host-compatibility/spec.md`](voice-input-host-compatibility/spec.md): draft contract for `TYPE_NULL` voice-result delivery, UI-only partials, one-shot raw commits and terminal-safe text preservation.
 - [`wubi-pinyin-input/spec.md`](wubi-pinyin-input/spec.md): draft behavior contract for `wubi86_pinyin` default mode, source-aware Wubi/Pinyin behavior, candidate annotation and composition editing.
 
 ## Retained Change Evidence
