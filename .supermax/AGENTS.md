@@ -20,7 +20,7 @@
 | `plugin-core/` | Changing plugin APIs or shared plugin contracts | `plugin-core/build.gradle.kts` and `plugin-core/src/main/` |
 | `plugins/` | Changing bundled Lua plugins | Each plugin's `manifest.yaml` and owned source files; package through `scripts/build-plugins.sh` |
 | `web/` | Changing the wireless-import web client | `web/package.json`, `web/src/`, and `web/vite.config.js`; `web/dist/` is generated |
-| `scripts/`, `run_tests.sh` | Discovering project automation and validation entrypoints | Scripts are command entrypoints; inspect before running or changing them |
+| `justfile`, `scripts/`, `run_tests.sh` | Discovering project automation and validation entrypoints | Prefer matching Just recipes; inspect scripts before running or changing them |
 | `app/src/main/jni/librime*`, `app/src/main/jni/snappy`, `app/src/main/assets/rime` | Working on vendored native/Rime content | Git submodules declared by `.gitmodules`; do not treat them as ordinary generated files or rewrite casually |
 | `docs/`, `README*.md`, `CONTRIBUTING.md` | Confirming public behavior or contributor-facing contracts | Keep documentation aligned with implemented behavior when the requested change affects those contracts |
 
@@ -33,7 +33,7 @@
 
 ## Commands And Validation
 
-- Before shell commands, follow the current session Justfile check rules. This repository currently has no Justfile; inspect again if command entrypoints change.
+- Before shell commands, follow the current session Justfile check rules. The repository `justfile` currently exposes `build-release-arm64`; use `just --summary` to discover current recipes.
 - Android tests: `./run_tests.sh` or the closest targeted Gradle test task documented by that script.
 - Android build: `./gradlew assembleDebug`; use a narrower declared Gradle task when sufficient.
 - Lua plugin packages: `bash scripts/build-plugins.sh`.

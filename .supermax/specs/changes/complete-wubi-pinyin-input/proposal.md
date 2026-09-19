@@ -1,16 +1,19 @@
 ---
 title: 完成五笔拼音混输与组合态实体键盘行为
 created: 2026-09-14
-updated: 2026-09-14
+updated: 2026-09-19
 doc_role: change-proposal
 authority: proposed
-status: draft
-accepted_at:
-merged_to: []
+status: accepted
+accepted_at: 2026-09-19
+merged_to:
+  - ".supermax/specs/wubi-pinyin-input/spec.md"
 validation:
   automated: passed
   human: not-run
-archive_state:
+archive_state: retained
+taskadmin_tag: master
+taskadmin_id: 3
 change_id: complete-wubi-pinyin-input
 capability: wubi-pinyin-input
 sources:
@@ -75,6 +78,13 @@ Make Xime's `wubi86_pinyin` behavior match the accepted Android physical-keyboar
 - Automated unit/build validation is recorded.
 - Physical-keyboard manual validation is recorded before the stable spec is promoted from draft.
 - No unrelated subsystem behavior is intentionally changed.
+
+## Convergence
+
+- Implemented by commit `d81c4cc33f18dd81768a26eba4ca528c8177e627` and merged into `.supermax/specs/wubi-pinyin-input/spec.md`.
+- `./gradlew :app:testDebugUnitTest` and `./gradlew :app:assembleDebug` passed on 2026-09-19 with Android SDK environment configured.
+- Human/device validation remains `not-run`; the merged stable owner therefore remains `authority: draft`.
+- TaskAdmin convergence owner: `master/3`.
 
 ## Source Trace
 

@@ -1,13 +1,16 @@
 ---
 title: 五笔拼音混输与组合态实体键盘行为规格
 created: 2026-09-14
-updated: 2026-09-14
+updated: 2026-09-19
 type: source
 doc_role: spec
 authority: draft
 status: experimental
+taskadmin_tag: master
+taskadmin_id: 3
 sources:
   - "User requirements agreed in chat on 2026-09-14"
+  - "git:d81c4cc33f18dd81768a26eba4ca528c8177e627"
   - "app/src/main/assets/rime/wubi86_pinyin.schema.yaml"
   - "app/src/main/assets/rime/pinyin_simp.schema.yaml"
   - "app/src/main/assets/default.custom.yaml"
@@ -23,6 +26,9 @@ sources:
   - "app/src/main/jni/librime/src/rime/gear/reverse_lookup_translator.cc"
   - "app/src/main/jni/librime/src/rime/gear/reverse_lookup_filter.cc"
   - "app/src/main/jni/librime/src/rime/engine.cc"
+  - "app/src/androidTest/java/com/kingzcheung/xime/rime/WubiPinyinNativeIntegrationTest.kt"
+  - "app/src/test/java/com/kingzcheung/xime/rime/WubiPinyinSchemaTest.kt"
+  - "app/src/test/java/com/kingzcheung/xime/rime/RimeCandidateTest.kt"
 derived_to: []
 confidence: high
 ---
@@ -52,6 +58,7 @@ Govern the observable behavior of Xime's `wubi86_pinyin` mixed-input schema and 
 - Changing T9, handwriting, voice-input, calculator, plugin candidate-transform, or English direct-commit product behavior except where a shared input path must preserve its existing semantics.
 - Transitional compatibility modes or preservation of old conflicting input behavior.
 - A general-purpose settings framework beyond the configuration fields required here.
+- Schema-independent physical-key mapping, host fallback, voice shortcuts, cursor-anchored candidate placement and transient status UI; owned by `.supermax/specs/physical-keyboard-input/spec.md`.
 
 ## Terms And Ownership
 
@@ -379,7 +386,8 @@ For every key event, at most one of these effects SHALL occur: Rime composition 
 
 ## Coverage Gaps
 
-- None recorded for the agreed product behavior. Implementation details remain subject to validation against the current vendored librime/librime-lua APIs.
+- Automated JVM/native integration coverage exists, but the physical-keyboard device matrix and rendered candidate-label checks have not been recorded as human validation.
+- General hardware-key routing and compact candidate/status UI are now owned separately by `.supermax/specs/physical-keyboard-input/spec.md`.
 
 ## Acceptance Criteria
 
@@ -392,20 +400,16 @@ For every key event, at most one of these effects SHALL occur: Rime composition 
 - Pinyin-origin `发` in mixed input is displayed as `发(ntcy)` on both candidate surfaces and commits only `发`; pure-Wubi `发` is not decorated.
 - Immediate `letter → Backspace/Enter/Space/navigation` sequences do not depend on UI update timing.
 - Engine unavailable/busy state never falls through to destructive host editing.
-- Relevant automated validation passes and the physical-keyboard manual matrix passes on an Android device.
+- Relevant automated validation passes; physical-keyboard manual validation remains the gate for promoting this draft to normative authority.
 
 ## Validation Plan
 
-- JVM tests:
-  - `./gradlew :app:testDebugUnitTest --tests 'com.kingzcheung.xime.service.KeyCodeMapperTest'`
-  - targeted tests for tri-state Rime dispatch/fallback decisions, first-use configuration parsing, candidate decoration, fuzzy-rule presence/order, and source-aware Wubi decisions.
-- Native/config checks:
-  - compile the affected Android/native sources through `./gradlew assembleDebug` or the narrowest equivalent task available at implementation time.
-  - deploy `wubi86_pinyin` and verify compiled schema loads without Lua/component errors.
+- JVM suite: `./gradlew :app:testDebugUnitTest`, including `WubiPinyinInputConfigTest`, `WubiPinyinSchemaTest`, `RimeCandidateTest`, `CandidateShortcutResolverTest`, `CandidateTransformCoordinatorTest`, `SoftCompositionRouteTest` and `DefaultCustomYamlTest`.
+- Build/native integration: `./gradlew :app:assembleDebug` and `app/src/androidTest/java/com/kingzcheung/xime/rime/WubiPinyinNativeIntegrationTest.kt` on a device/emulator with the native engine available.
 - Device validation:
-  - run the physical-keyboard acceptance matrix for right Shift, `Ctrl+.`, candidate keys, paging, Backspace, Forward Delete, arrows, Home/End, Page keys, Space, Enter, and Escape.
-  - repeat immediate letter-plus-edit-key sequences without waiting for candidate UI refresh.
-  - verify normal and compact/floating candidate bars display `发(ntcy)` and commit `发`.
+  - run the physical-keyboard acceptance matrix for right Shift, `Ctrl+.`, candidate keys, paging, Backspace, Forward Delete, arrows, Home/End, Page keys, Space, Enter, and Escape;
+  - repeat immediate letter-plus-edit-key sequences without waiting for candidate UI refresh;
+  - verify normal and compact candidate bars display `发(ntcy)` and commit `发`;
   - verify `jiang`/`guang` and representative inputs for all fuzzy pairs in both schemas.
 
 ## Assumptions And Open Questions
@@ -416,17 +420,15 @@ For every key event, at most one of these effects SHALL occur: Rime composition 
 
 ## Source Trace
 
-- User agreement, 2026-09-14: full scope; first-use configurable default English with later memory; extra `n↔l` and `eng↔ong`; mixed and standalone fuzzy Pinyin; accepted source-based four/five-key Wubi rule; accepted composition key table; physical shortcut scope; Pinyin-origin-only annotation; longest full Wubi code and `发(ntcy)` display rule.
-- `app/src/main/assets/rime/wubi86_pinyin.schema.yaml`: current mixed schema, translators, switches, completion, and absence of source-aware auto-commit.
-- `app/src/main/assets/rime/pinyin_simp.schema.yaml`: standalone Pinyin algebra and dependency source.
-- `app/src/main/assets/default.custom.yaml`: current global `ascii_composer` and candidate bindings.
-- `app/src/main/java/com/kingzcheung/xime/service/XimeInputMethodService.kt:onKeyDown/onKeyUp`: physical key routing and current special-key boundary.
-- `app/src/main/java/com/kingzcheung/xime/service/ImeKeyRouter.kt:handleHardwareRimeKey/processDeleteKey`: Rime/host fallback and stale-display-state risk.
-- `app/src/main/java/com/kingzcheung/xime/service/ImeSessionController.kt:applyComposition/updateUIWithResult/restorePersistedSchemaOptions`: UI snapshot and persisted option restoration.
-- `app/src/main/java/com/kingzcheung/xime/service/ImeSchemaController.kt:switchInputMethod/handleToolbarEditingAction`: mode switch and direct host editing paths.
-- `app/src/main/java/com/kingzcheung/xime/service/ImeKeyboardCallbacks.kt:onCursorMove`: current soft cursor path.
-- `app/src/main/java/com/kingzcheung/xime/rime/RimeEngine.kt:processKeyAndGetResult`: current inability to distinguish unhandled from unavailable/lock-busy.
-- `app/src/main/jni/librime_jni/rime_jni.cc:readCurrentState/lookupText`: current candidate transport and Wubi reverse lookup capabilities.
-- `app/src/main/jni/librime/src/rime/gear/speller.cc`: native max-length and unique-candidate behavior that cannot be applied globally to mixed Pinyin.
-- `app/src/main/jni/librime/src/rime/gear/reverse_lookup_translator.cc`: Pinyin-origin candidate type `reverse_lookup`.
-- `app/src/main/jni/librime/src/rime/engine.cc`: candidate filter pipeline, option reset behavior, and ordered processor semantics.
+- User agreement, 2026-09-14: first-use configurable default English with later memory; extra `n↔l` and `eng↔ong`; mixed/standalone fuzzy Pinyin; source-aware four/five-key Wubi rule; composition key table; Pinyin-origin-only longest-code annotation and `发(ntcy)` example.
+- Commit `d81c4cc33f18dd81768a26eba4ca528c8177e627`: implementation and regression tests for this capability.
+- `app/src/main/assets/rime/wubi86_pinyin.schema.yaml`, `pinyin_simp.schema.yaml`, and `app/src/main/assets/default.custom.yaml`: switches, translators, shared fuzzy algebra and fixed bindings.
+- `app/src/main/java/com/kingzcheung/xime/settings/KeysConfigHelper.kt` and `SettingsPreferences.kt`: merged first-use configuration and persisted option behavior.
+- `app/src/main/java/com/kingzcheung/xime/rime/RimeEngine.kt` and `app/src/main/jni/librime_jni/rime_jni.cc`: tri-state ordered dispatch, candidate source metadata, exact-Wubi source decisions and lookup transport.
+- `app/src/main/jni/librime_jni/wubi_source_order.h`: longest-code and dictionary-order tie behavior.
+- `app/src/main/java/com/kingzcheung/xime/service/ImeKeyRouter.kt`, `ImeSessionController.kt`, `ImeSchemaController.kt` and `XimeInputMethodService.kt`: composition-authoritative routing, default/remembered mode and UI state.
+- Tests: `WubiPinyinInputConfigTest`, `WubiPinyinSchemaTest`, `RimeCandidateTest`, `CandidateShortcutResolverTest`, `CandidateTransformCoordinatorTest`, `SoftCompositionRouteTest`, `DefaultCustomYamlTest`, `app/src/test/cpp/wubi_source_order_test.cc`, and `WubiPinyinNativeIntegrationTest`.
+- Validation evidence: `./gradlew :app:testDebugUnitTest` and `./gradlew :app:assembleDebug` passed on 2026-09-19; device/manual validation remains not run.
+- Related general hardware owner: `.supermax/specs/physical-keyboard-input/spec.md`.
+- Historical change workspace: `.supermax/specs/changes/complete-wubi-pinyin-input/`.
+- TaskAdmin task: `master/3`.

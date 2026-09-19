@@ -1,0 +1,7 @@
+name: 回填 init supermax 后的行为规格
+description: 从 df0b83d8..HEAD 提取实体键盘、IME 会话、扩展词典管理、ARM64 构建规格并收敛五笔拼音规格
+status: done
+priority: medium
+dependencies: []
+created: "2026-09-19T11:08:35.000Z"
+updated: "2026-09-19T11:35:13.000Z"

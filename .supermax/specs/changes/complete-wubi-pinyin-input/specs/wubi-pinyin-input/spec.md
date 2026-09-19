@@ -1,18 +1,20 @@
 ---
 title: 五笔拼音混输与组合态实体键盘行为增量规格
 created: 2026-09-14
-updated: 2026-09-14
+updated: 2026-09-19
 type: source
 doc_role: spec
 authority: proposed
-status: draft
-accepted_at:
+status: accepted
+accepted_at: 2026-09-19
 merged_to:
   - ".supermax/specs/wubi-pinyin-input/spec.md"
 validation:
   automated: passed
   human: not-run
-archive_state:
+archive_state: retained
+taskadmin_tag: master
+taskadmin_id: 3
 change_id: complete-wubi-pinyin-input
 capability: wubi-pinyin-input
 sources:
@@ -111,9 +113,15 @@ None. No previously accepted stable spec existed for this capability.
 
 None.
 
+## Convergence
+
+- Requirements are merged into `.supermax/specs/wubi-pinyin-input/spec.md` and implemented by commit `d81c4cc33f18dd81768a26eba4ca528c8177e627`.
+- Automated JVM tests and debug assembly passed on 2026-09-19; device/manual validation is `not-run`, so the stable owner remains draft.
+
 ## Source Trace
 
 - `.supermax/specs/wubi-pinyin-input/spec.md`
 - `.supermax/specs/changes/complete-wubi-pinyin-input/proposal.md`
-- `.supermax/specs/changes/complete-wubi-pinyin-input/design.md`
+- `.supermax/specs/changes/complete-wubi-pinyin-input/design.md` (retained historical evidence)
 - User requirements agreed in chat on 2026-09-14.
+- TaskAdmin task: `master/3`.
