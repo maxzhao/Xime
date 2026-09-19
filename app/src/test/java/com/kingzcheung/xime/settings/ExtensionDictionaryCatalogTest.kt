@@ -1,6 +1,7 @@
 package com.kingzcheung.xime.settings
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -68,10 +69,34 @@ class ExtensionDictionaryCatalogTest {
 
         assertTrue(pinyin.contains("- pinyin_simp"))
         assertTrue(pinyin.contains("- pinyin_simp_ext"))
-        assertTrue(pinyin.contains("- xime_extension_words"))
+        assertTrue(pinyin.lineSequence().any { it.trim() == "- xime_extension_words" })
         assertTrue(wubi.contains("- wubi86"))
         assertTrue(wubi.contains("- wubi86_extra"))
         assertTrue(wubi.contains("formula: \"AaAbBaBb\""))
-        assertTrue(wubi.contains("- xime_extension_words"))
+        assertTrue(wubi.lineSequence().any { it.trim() == "- xime_extension_words_wubi" })
+        assertFalse(wubi.lineSequence().any { it.trim() == "- xime_extension_words" })
+    }
+
+    @Test
+    fun `Wubi managed dictionary omits extension weights while Pinyin preserves them`() {
+        val enabledIds = linkedSetOf("second", "first")
+        val pinyin = ExtensionDictionaryManager.managedDictionaryHeader(
+            "xime_extension_words",
+            enabledIds,
+            includeWeights = true,
+        ) + ExtensionDictionaryManager.managedDictionaryEntryLine("人工智能", 998, includeWeight = true)
+        val wubi = ExtensionDictionaryManager.managedDictionaryHeader(
+            "xime_extension_words_wubi",
+            enabledIds,
+            includeWeights = false,
+        ) + ExtensionDictionaryManager.managedDictionaryEntryLine("人工智能", 998, includeWeight = false)
+
+        assertTrue(pinyin.contains("sort: by_weight"))
+        assertTrue(pinyin.contains("  - weight"))
+        assertTrue(pinyin.endsWith("人工智能\t998\n"))
+        assertTrue(wubi.contains("sort: original"))
+        assertFalse(wubi.contains("  - weight"))
+        assertTrue(wubi.endsWith("人工智能\n"))
+        assertTrue(wubi.contains("# enabled: first,second"))
     }
 }

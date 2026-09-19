@@ -4,6 +4,7 @@ Purpose: route to verified behavior specifications and spec-driven change artifa
 
 ## Active Specifications
 
+- [`extension-dictionaries/spec.md`](extension-dictionaries/spec.md): normative contract for weighted Pinyin extensions, unweighted Wubi extensions, base Wubi candidate priority, synchronized regeneration, and deployment rollback.
 - [`wubi-pinyin-input/spec.md`](wubi-pinyin-input/spec.md): draft behavior contract for `wubi86_pinyin` default mode, physical shortcuts, source-aware Wubi/Pinyin behavior, candidate annotation, and composition editing.
 
 ## Draft Changes

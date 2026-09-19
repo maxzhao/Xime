@@ -1,0 +1,7 @@
+name: 固化扩展词库候选优先级规格
+description: 保存并收敛扩展词库对拼音词频与五笔86候选优先级的行为规格
+status: done
+priority: medium
+dependencies: []
+created: "2026-09-19T10:52:51.000Z"
+updated: "2026-09-19T10:56:15.000Z"

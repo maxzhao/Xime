@@ -41,7 +41,8 @@ object ExtensionDictionaryManager {
     private const val PREF_ENABLED_IDS = "enabled_ids"
     private const val PREF_COUNT_PREFIX = "entry_count_"
     private const val PREF_SOURCE_PREFIX = "source_url_"
-    private const val ACTIVE_DICTIONARY_NAME = "xime_extension_words"
+    private const val ACTIVE_PINYIN_DICTIONARY_NAME = "xime_extension_words"
+    private const val ACTIVE_WUBI_DICTIONARY_NAME = "xime_extension_words_wubi"
     private const val PINYIN_DICTIONARY_NAME = "xime_pinyin"
     private const val WUBI_DICTIONARY_NAME = "xime_wubi86"
     private const val MAX_SOURCE_BYTES = 100L * 1024L * 1024L
@@ -155,14 +156,12 @@ object ExtensionDictionaryManager {
         if (validEnabled != enabledIds(appContext)) saveEnabledIds(appContext, validEnabled)
         ensureAggregateSources(appContext)
         ensureSchemaPatches(appContext)
-        val active = activeDictionaryFile(appContext)
         val marker = enabledMarker(validEnabled)
-        val currentMarker = if (active.isFile) {
-            runCatching { active.bufferedReader().useLines { it.take(2).lastOrNull() } }.getOrNull()
-        } else {
-            null
-        }
-        if (currentMarker != marker) {
+        val activeFiles = listOf(
+            activePinyinDictionaryFile(appContext),
+            activeWubiDictionaryFile(appContext),
+        )
+        if (activeFiles.any { currentEnabledMarker(it) != marker }) {
             writeActiveDictionary(appContext, validEnabled)
         }
     }
@@ -177,7 +176,7 @@ object ExtensionDictionaryManager {
         import_tables:
           - pinyin_simp
           - pinyin_simp_ext
-          - $ACTIVE_DICTIONARY_NAME
+          - $ACTIVE_PINYIN_DICTIONARY_NAME
         ...
     """.trimIndent() + "\n"
 
@@ -191,7 +190,7 @@ object ExtensionDictionaryManager {
         import_tables:
           - wubi86
           - wubi86_extra
-          - $ACTIVE_DICTIONARY_NAME
+          - $ACTIVE_WUBI_DICTIONARY_NAME
         encoder:
           exclude_patterns:
             - "^z.*$"
@@ -267,9 +266,11 @@ object ExtensionDictionaryManager {
         ensureSchemaPatches(context)
         val rimeDir = File(context.filesDir, "rime").apply { mkdirs() }
         val tempDatabase = File(context.cacheDir, "extension_dictionary_merge.db")
-        val tempDictionary = File(rimeDir, ".$ACTIVE_DICTIONARY_NAME.dict.yaml.tmp")
+        val tempPinyinDictionary = File(rimeDir, ".$ACTIVE_PINYIN_DICTIONARY_NAME.dict.yaml.tmp")
+        val tempWubiDictionary = File(rimeDir, ".$ACTIVE_WUBI_DICTIONARY_NAME.dict.yaml.tmp")
         tempDatabase.delete()
-        tempDictionary.delete()
+        tempPinyinDictionary.delete()
+        tempWubiDictionary.delete()
 
         val database = SQLiteDatabase.openOrCreateDatabase(tempDatabase, null)
         try {
@@ -305,24 +306,29 @@ object ExtensionDictionaryManager {
                 insert.close()
             }
 
-            tempDictionary.bufferedWriter(Charsets.UTF_8).use { writer ->
-                writer.appendLine("# Xime managed words. Rebuilt from enabled extension dictionaries.")
-                writer.appendLine(enabledMarker(enabledIds))
-                writer.appendLine("---")
-                writer.appendLine("name: $ACTIVE_DICTIONARY_NAME")
-                writer.appendLine("version: \"1\"")
-                writer.appendLine("sort: by_weight")
-                writer.appendLine("use_preset_vocabulary: false")
-                writer.appendLine("columns:")
-                writer.appendLine("  - text")
-                writer.appendLine("  - weight")
-                writer.appendLine("...")
-                database.rawQuery("SELECT word, weight FROM words ORDER BY word", null).use { cursor ->
-                    while (cursor.moveToNext()) {
-                        writer.append(cursor.getString(0))
-                            .append('\t')
-                            .append(cursor.getLong(1).toString())
-                            .append('\n')
+            tempPinyinDictionary.bufferedWriter(Charsets.UTF_8).use { pinyinWriter ->
+                tempWubiDictionary.bufferedWriter(Charsets.UTF_8).use { wubiWriter ->
+                    pinyinWriter.append(
+                        managedDictionaryHeader(
+                            ACTIVE_PINYIN_DICTIONARY_NAME,
+                            enabledIds,
+                            includeWeights = true,
+                        ),
+                    )
+                    wubiWriter.append(
+                        managedDictionaryHeader(
+                            ACTIVE_WUBI_DICTIONARY_NAME,
+                            enabledIds,
+                            includeWeights = false,
+                        ),
+                    )
+                    database.rawQuery("SELECT word, weight FROM words ORDER BY word", null).use { cursor ->
+                        while (cursor.moveToNext()) {
+                            val word = cursor.getString(0)
+                            val weight = cursor.getLong(1)
+                            pinyinWriter.append(managedDictionaryEntryLine(word, weight, includeWeight = true))
+                            wubiWriter.append(managedDictionaryEntryLine(word, weight, includeWeight = false))
+                        }
                     }
                 }
             }
@@ -330,7 +336,41 @@ object ExtensionDictionaryManager {
             database.close()
             tempDatabase.delete()
         }
-        replaceFile(tempDictionary, activeDictionaryFile(context))
+        replaceFile(tempPinyinDictionary, activePinyinDictionaryFile(context))
+        replaceFile(tempWubiDictionary, activeWubiDictionaryFile(context))
+    }
+
+    /**
+     * Pinyin keeps source frequencies, while Wubi deliberately omits them. Imported words are
+     * auto-encoded by the Wubi encoder; giving them positive weights would move them ahead of the
+     * original Wubi86 entries and break first-candidate and four/five-key commit behavior.
+     */
+    internal fun managedDictionaryHeader(
+        dictionaryName: String,
+        enabledIds: Set<String>,
+        includeWeights: Boolean,
+    ): String = buildString {
+        appendLine("# Xime managed words. Rebuilt from enabled extension dictionaries.")
+        appendLine(enabledMarker(enabledIds))
+        appendLine("---")
+        appendLine("name: $dictionaryName")
+        appendLine("version: \"1\"")
+        appendLine("sort: ${if (includeWeights) "by_weight" else "original"}")
+        appendLine("use_preset_vocabulary: false")
+        appendLine("columns:")
+        appendLine("  - text")
+        if (includeWeights) appendLine("  - weight")
+        appendLine("...")
+    }
+
+    internal fun managedDictionaryEntryLine(
+        word: String,
+        weight: Long,
+        includeWeight: Boolean,
+    ): String = buildString {
+        append(word)
+        if (includeWeight) append('\t').append(weight)
+        append('\n')
     }
 
     private fun ensureEngineInitialized(context: Context) {
@@ -416,7 +456,17 @@ object ExtensionDictionaryManager {
         downloadedFile(context, definition.id).isFile &&
             prefs(context).getString(PREF_SOURCE_PREFIX + definition.id, null) == definition.sourceUrl
 
-    private fun activeDictionaryFile(context: Context): File = File(context.filesDir, "rime/$ACTIVE_DICTIONARY_NAME.dict.yaml")
+    private fun activePinyinDictionaryFile(context: Context): File =
+        File(context.filesDir, "rime/$ACTIVE_PINYIN_DICTIONARY_NAME.dict.yaml")
+
+    private fun activeWubiDictionaryFile(context: Context): File =
+        File(context.filesDir, "rime/$ACTIVE_WUBI_DICTIONARY_NAME.dict.yaml")
+
+    private fun currentEnabledMarker(file: File): String? = if (file.isFile) {
+        runCatching { file.bufferedReader().useLines { it.take(2).lastOrNull() } }.getOrNull()
+    } else {
+        null
+    }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
