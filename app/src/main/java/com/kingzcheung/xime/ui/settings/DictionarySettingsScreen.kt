@@ -83,8 +83,12 @@ fun DictionarySettingsContent(
         topBar = {
             TopAppBar(
                 title = {
-                    val schema = uiState.availableSchemas.find { it.schemaId == uiState.selectedSchema }
-                    Text("词库管理 - ${schema?.name ?: uiState.selectedSchema}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (selectedDictTab == 3) {
+                        Text("扩展词库")
+                    } else {
+                        val schema = uiState.availableSchemas.find { it.schemaId == uiState.selectedSchema }
+                        Text("词库管理 - ${schema?.name ?: uiState.selectedSchema}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -92,25 +96,27 @@ fun DictionarySettingsContent(
                     }
                 },
                 actions = {
-                    Row(
-                        modifier = Modifier.clickable { showSchemaMenu = true },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val schema = uiState.availableSchemas.find { it.schemaId == uiState.selectedSchema }
-                        Text(schema?.name ?: uiState.selectedSchema, style = MaterialTheme.typography.bodyMedium)
-                        Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
-                    }
-                    DropdownMenu(
-                        expanded = showSchemaMenu,
-                        onDismissRequest = { showSchemaMenu = false },
-                        offset = DpOffset(0.dp, 4.dp),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        for (s in uiState.availableSchemas) {
-                            DropdownMenuItem(
-                                text = { Text(s.name) },
-                                onClick = { showSchemaMenu = false; viewModel.selectSchema(s.schemaId) }
-                            )
+                    if (selectedDictTab != 3) {
+                        Row(
+                            modifier = Modifier.clickable { showSchemaMenu = true },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val schema = uiState.availableSchemas.find { it.schemaId == uiState.selectedSchema }
+                            Text(schema?.name ?: uiState.selectedSchema, style = MaterialTheme.typography.bodyMedium)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
+                        }
+                        DropdownMenu(
+                            expanded = showSchemaMenu,
+                            onDismissRequest = { showSchemaMenu = false },
+                            offset = DpOffset(0.dp, 4.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            for (s in uiState.availableSchemas) {
+                                DropdownMenuItem(
+                                    text = { Text(s.name) },
+                                    onClick = { showSchemaMenu = false; viewModel.selectSchema(s.schemaId) }
+                                )
+                            }
                         }
                     }
                 },
@@ -139,11 +145,14 @@ fun DictionarySettingsContent(
                 TabButton("个人词库", selected = selectedDictTab == 1, onClick = { selectedDictTab = 1 }, modifier = Modifier.weight(1f))
                 Spacer(modifier = Modifier.width(8.dp))
                 TabButton("方案词库", selected = selectedDictTab == 2, onClick = { selectedDictTab = 2 }, modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.width(8.dp))
+                TabButton("扩展词库", selected = selectedDictTab == 3, onClick = { selectedDictTab = 3 }, modifier = Modifier.weight(1f))
             }
             when (selectedDictTab) {
                 0 -> CustomPhraseTabContent(viewModel = customPhraseVM, uiState = customPhraseState)
                 1 -> SchemaDictContent(viewModel = viewModel, uiState = uiState)
                 2 -> SchemaDictBrowserPanel()
+                3 -> ExtensionDictionaryPanel()
             }
         }
     }

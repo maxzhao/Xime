@@ -3,7 +3,6 @@ package com.kingzcheung.xime.service
 import android.util.Log
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
-import android.widget.Toast
 import com.kingzcheung.xime.R
 import com.kingzcheung.xime.association.AssociationManager
 import com.kingzcheung.xime.keyboard.OverlayRoute
@@ -39,6 +38,12 @@ internal fun shouldUseGenericSoftCompositionRoute(
     isPanelLayout: Boolean,
 ): Boolean = key in setOf("enter", "space") &&
     !isT9 && !toolPanelInputFocused && !showQuickSendForm && !isPanelLayout
+
+/** Xime-owned English fallback is legal only after Rime authoritatively rejects the key. */
+internal fun shouldHandlePendingEnglishFallback(
+    dispatch: RimeKeyDispatch,
+    pendingEnglishText: String,
+): Boolean = pendingEnglishText.isNotEmpty() && dispatch is RimeKeyDispatch.Unhandled
 
 internal enum class HardwareOptionShortcut(val optionName: String) {
     PUNCTUATION("ascii_punct"),
@@ -89,7 +94,6 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
     /** 在 key-processing 线程维护：按下被 Rime 消费的修饰键不应再回送目标应用。 */
     private val consumedModifierKeys = mutableSetOf<Int>()
     private val rightShiftModeChangeTracker = RightShiftModeChangeTracker()
-    private var hardwareStateToast: Toast? = null
     private var hardwareStatusClearJob: Job? = null
 
     /**
@@ -138,7 +142,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                 isAsciiMode = result?.isAsciiMode,
             )
             if (changedAsciiMode != null) {
-                withContext(Dispatchers.Main) { showHardwareModeToast(changedAsciiMode) }
+                withContext(Dispatchers.Main) { showHardwareModeStatus(changedAsciiMode) }
             }
 
             val consumed = if (keyCode == RIME_KEY_SHIFT_R) {
@@ -190,7 +194,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                                 optionAfter,
                             )
                             withContext(Dispatchers.Main) {
-                                showHardwareOptionToast(optionShortcut, optionAfter)
+                                showHardwareOptionStatus(optionShortcut, optionAfter)
                             }
                         }
                     }
@@ -263,34 +267,30 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         }
     }
 
-    private fun showHardwareModeToast(isAsciiMode: Boolean) {
-        showHardwareStateToast(
+    private fun showHardwareModeStatus(isAsciiMode: Boolean) {
+        showHardwareStatus(
             if (isAsciiMode) R.string.hardware_mode_english else R.string.hardware_mode_chinese
         )
     }
 
-    private fun showHardwareOptionToast(shortcut: HardwareOptionShortcut, enabled: Boolean) {
+    private fun showHardwareOptionStatus(shortcut: HardwareOptionShortcut, enabled: Boolean) {
         val message = when (shortcut) {
             HardwareOptionShortcut.PUNCTUATION ->
                 if (enabled) R.string.hardware_punctuation_english else R.string.hardware_punctuation_chinese
             HardwareOptionShortcut.CHARACTER_WIDTH ->
                 if (enabled) R.string.hardware_character_width_full else R.string.hardware_character_width_half
         }
-        showHardwareStateToast(message)
+        showHardwareStatus(message)
     }
 
-    private fun showHardwareStateToast(message: Int) {
+    private fun showHardwareStatus(message: Int) {
         val text = service.getString(message)
-        hardwareStateToast?.cancel()
-        hardwareStateToast = Toast.makeText(service, text, Toast.LENGTH_SHORT).also { it.show() }
-
-        // 系统 Toast 在 Termux 等终端场景可能被抑制；同时由 IME 的实体键盘层自绘提示。
         hardwareStatusClearJob?.cancel()
-        service.uiState.value = service.uiState.value.copy(hardwareStatusMessage = text)
+        service.hardwareStatusMessageState.value = text
         hardwareStatusClearJob = service.serviceScope.launch(Dispatchers.Main) {
             delay(HARDWARE_STATUS_DURATION_MS)
-            if (service.uiState.value.hardwareStatusMessage == text) {
-                service.uiState.value = service.uiState.value.copy(hardwareStatusMessage = "")
+            if (service.hardwareStatusMessageState.value == text) {
+                service.hardwareStatusMessageState.value = ""
             }
         }
     }
@@ -999,8 +999,9 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
      */
     private fun handleSoftCompositionKey(key: String, rimeKeyCode: Int, androidKeyCode: Int) {
         postRimeJob {
+            val dispatch = service.rimeEngine.dispatchKey(rimeKeyCode, 0)
             val pendingEnglish = service.candidateState.value.pendingEnglishText
-            if (pendingEnglish.isNotEmpty()) {
+            if (shouldHandlePendingEnglishFallback(dispatch, pendingEnglish)) {
                 if (key == "space") {
                     withContext(Dispatchers.Main) { service.commitText(" ") }
                     service.candidateState.value = service.candidateState.value.copy(
@@ -1010,7 +1011,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                 }
                 return@postRimeJob
             }
-            when (val dispatch = service.rimeEngine.dispatchKey(rimeKeyCode, 0)) {
+            when (dispatch) {
                 is RimeKeyDispatch.Handled -> {
                     if (dispatch.result.committedText.isNotEmpty()) {
                         withContext(Dispatchers.Main) { service.commitText(dispatch.result.committedText) }

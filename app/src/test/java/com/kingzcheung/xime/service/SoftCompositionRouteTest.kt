@@ -1,5 +1,7 @@
 package com.kingzcheung.xime.service
 
+import com.kingzcheung.xime.rime.RimeKeyDispatch
+import com.kingzcheung.xime.rime.RimeProcessResult
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,6 +24,16 @@ class SoftCompositionRouteTest {
         assertFalse(route("enter", isT9 = false, toolPanel = true))
         assertFalse(route("space", isT9 = false, quickSend = true))
         assertFalse(route("enter", isT9 = false, panelLayout = true))
+    }
+
+    @Test
+    fun `stale pending English never bypasses an authoritative Rime result`() {
+        val result = RimeProcessResult(false, "w", "w", "", emptyArray(), false, false, false)
+
+        assertFalse(shouldHandlePendingEnglishFallback(RimeKeyDispatch.Handled(result), "stale"))
+        assertFalse(shouldHandlePendingEnglishFallback(RimeKeyDispatch.Unavailable, "stale"))
+        assertFalse(shouldHandlePendingEnglishFallback(RimeKeyDispatch.Unhandled(result), ""))
+        assertTrue(shouldHandlePendingEnglishFallback(RimeKeyDispatch.Unhandled(result), "word"))
     }
 
     private fun route(

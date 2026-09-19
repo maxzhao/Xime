@@ -2,24 +2,35 @@
 
 ## Current State
 
-- Status: done
-- Current phase: completed
-- Next action: none.
+- Status: review
+- Current phase: true root-cause fix implemented; awaiting user verification
+- Next action: 用户在原复现环境中启用语音长按功能，验证实体 `w → Space` 不再绕过候选框。
 
 ## Checklist
 
-- [x] 读取 `plan.md`、相关规格要求及 `RimeEngine.kt`、`ImeKeyRouter.kt`、`XimeInputMethodService.kt`、`RimeCandidateTest.kt` 的当前内容和 diff；记录并保留重叠的用户修改。
-- [x] 完成普通 Space 的权威兜底规则：native 未处理但前/后仍有组合态时禁止宿主空格；有候选则选择索引 0，无候选则安全消费；仅前后均无组合态时返回 `Unhandled`。
-- [x] 核对软键盘 Space 与未修饰实体 Space 都使用同一规则，且无组合态路径仍只输入一个空格；无需追加路由修改。
-- [x] 完善最小回归测试；当前 `RimeCandidateTest` 已覆盖组合态有/无候选、空状态宿主兜底及带修饰 Space 边界，无需增加无关测试。
-- [x] 运行针对性 JVM 测试并修复实际失败。
-- [x] 运行 `./gradlew assembleDebug` 并修复本任务导致的编译/构建失败。
-- [x] 在 Android 设备上验证软键盘与实体键盘的 `w → Space`（立即输入和候选可见后输入）及无组合态空格；记录实际结果。
-- [x] 对照验收条件检查无双提交、无空格泄漏、无无关行为变化；更新本 TODO 的改动文件、验证证据、错误/阻塞与下一步。
+### Investigation History
+
+- [x] 保留 `RimeEngine.dispatchKey()` 的普通 Space 组合态保护。
+- [x] 用户验证 `processed=false` 修补无效，撤销其为主根因的结论。
+- [x] 用户验证实体 KeyUp 所有权修补无效；撤回该非必要代码，不保留无关行为变化。
+- [x] 沿启用 STT 时的实体 Space 短按路径重新追踪到 `handleSoftCompositionKey()`。
+- [x] 找到真正根因：残留 `candidateState.pendingEnglishText` 在调用 Rime 前直接提交宿主空格并返回。
+
+### Implementation
+
+- [x] `handleSoftCompositionKey()` 改为先在有序 key-processing 队列中调用 `RimeEngine.dispatchKey()`。
+- [x] `Handled` 始终优先提交 Rime 结果并更新候选；`Unavailable` 不做宿主兜底。
+- [x] 仅权威 `RimeKeyDispatch.Unhandled` 允许处理 `pendingEnglishText` 或发送普通宿主 Space/Enter。
+- [x] 添加回归测试：残留 `pendingEnglishText` 在 `Handled`/`Unavailable` 时不得绕过 Rime，仅 `Unhandled` 可执行英文兜底。
+- [x] 从 `InputUIState` 和 `HardwareKeyboardCandidateBar` 移除状态提示。
+- [x] 新增独立 `HardwareKeyboardStatusOverlay`；使用独立 Compose state，不触发候选状态更新，不依赖系统 Toast。
+- [x] 根据用户反馈将浮层顶部安全间距调整为 `56.dp`；用户确认位置已正常。
+- [x] 运行针对性 JVM 测试和 `assembleDebug`。
+- [ ] 用户在原复现应用中确认启用语音长按功能后的实体 Space 不再泄漏。
 
 ## Loaded Context
 
-- Plan: `plan.md`
+- Plan: `plan.md`（已更新为真正根因和独立浮层方案）
 - Rules/specs/knowledge:
   - `.supermax/AGENTS.md`
   - `.supermax/specs/wubi-pinyin-input/spec.md`
@@ -31,48 +42,53 @@
 
 | Path | Change | Notes |
 | --- | --- | --- |
-| `app/src/main/java/com/kingzcheung/xime/rime/RimeEngine.kt` | 已有工作区修补经检查和验证，未追加改动 | `dispatchKey()`/`resolveUnhandledSpace()` 在 native 未处理普通 Space 时根据权威组合态选择首候选、消费或允许宿主兜底。 |
-| `app/src/test/java/com/kingzcheung/xime/rime/RimeCandidateTest.kt` | 已有工作区回归测试经检查和验证，未追加改动 | 覆盖普通 Space 泄漏决策分支。 |
-| `app/src/main/java/com/kingzcheung/xime/service/ImeKeyRouter.kt` | 仅检查，无任务新增改动 | 软/实体 Space 的 `Handled`/`Unhandled` 路由已共用 `dispatchKey()` 结果。 |
-| `app/src/main/java/com/kingzcheung/xime/service/XimeInputMethodService.kt` | 仅检查，无任务新增改动 | 实体 Space 已映射到统一 Rime 路径。 |
-| `.supermax/tasks/master/task_001/todo.md` | 更新 | 记录完成状态、验证证据和环境说明。 |
+| `app/src/main/java/com/kingzcheung/xime/service/ImeKeyRouter.kt` | 修改 | Rime 派发优先于 `pendingEnglishText`；状态文案只更新独立浮层。 |
+| `app/src/main/java/com/kingzcheung/xime/service/InputUIState.kt` | 修改 | 删除 `hardwareStatusMessage`，候选 UI state 不再承载瞬时状态提示。 |
+| `app/src/main/java/com/kingzcheung/xime/service/XimeInputMethodService.kt` | 修改 | 挂载并清理独立状态浮层 state。 |
+| `app/src/main/java/com/kingzcheung/xime/ui/keyboard/HardwareKeyboardCandidateBar.kt` | 修改 | 删除 `statusMessage` 参数和候选卡内状态文本。 |
+| `app/src/main/java/com/kingzcheung/xime/ui/keyboard/HardwareKeyboardStatusOverlay.kt` | 新增 | 独立状态浮层；独立组合域读取状态；使用 `56.dp` 顶部安全间距。 |
+| `app/src/test/java/com/kingzcheung/xime/service/SoftCompositionRouteTest.kt` | 修改 | 覆盖残留英文状态不得绕过权威 Rime 结果。 |
+| `.supermax/tasks/master/task_001/plan.md` | 更新 | 记录真正根因、实现方案和验收条件。 |
+| `.supermax/tasks/master/task_001/todo.md` | 更新 | 记录失败假设、最终修复和用户复验门禁。 |
 
 ## Validation
 
 | Command / check | Result | Evidence |
 | --- | --- | --- |
-| `ANDROID_HOME="$HOME/Android/Sdk" ANDROID_SDK_ROOT="$HOME/Android/Sdk" ./gradlew :app:testDebugUnitTest --tests 'com.kingzcheung.xime.rime.RimeCandidateTest' --tests 'com.kingzcheung.xime.service.KeyCodeMapperTest'` | Passed | `BUILD SUCCESSFUL in 4s`; 48 actionable tasks: 1 executed, 47 up-to-date. |
-| `ANDROID_HOME="$HOME/Android/Sdk" ANDROID_SDK_ROOT="$HOME/Android/Sdk" ./gradlew :app:testDebugUnitTest --tests 'com.kingzcheung.xime.service.SoftCompositionRouteTest'` | Passed | `BUILD SUCCESSFUL in 2s`; 48 actionable tasks: 1 executed, 47 up-to-date. |
-| `ANDROID_HOME="$HOME/Android/Sdk" ANDROID_SDK_ROOT="$HOME/Android/Sdk" ./gradlew assembleDebug` | Passed | `BUILD SUCCESSFUL in 2s`; 84 actionable tasks: 8 executed, 76 up-to-date. |
-| Android API 36 AVD：软键盘 `w → Space`，候选可见后输入 | Passed | `w` 后第一候选为“人”；点击软空格后 `compose_message_text` 为 `text="人"`，候选关闭，无 U+0020。 |
-| Android API 36 AVD：软键盘立即 `w → Space` | Passed | 连续坐标点击后 `compose_message_text` 为 `text="人"`，无空格泄漏或双提交。 |
-| Android API 36 AVD：未修饰实体键盘 `w → Space`，候选可见后输入 | Passed | 浮动候选第一项为“人”；实体 Space 后 `compose_message_text` 为 `text="人"`，候选关闭，无 U+0020。 |
-| Android API 36 AVD：未修饰实体键盘立即 `w → Space` | Passed | 连续 KEYCODE_W/KEYCODE_SPACE 后 `compose_message_text` 为 `text="人"`，无空格泄漏或双提交。 |
-| Android API 36 AVD：无组合态时软/实体 Space | Passed | 两条路径分别得到 `compose_message_text` 的 `text=" "`，每次仅一个普通空格。 |
+| `git --no-pager diff --check` | Passed | 无空白错误。 |
+| `ANDROID_HOME="$HOME/Android/Sdk" ANDROID_SDK_ROOT="$HOME/Android/Sdk" ./gradlew :app:testDebugUnitTest --tests 'com.kingzcheung.xime.service.SoftCompositionRouteTest' --tests 'com.kingzcheung.xime.rime.RimeCandidateTest' --tests 'com.kingzcheung.xime.service.KeyCodeMapperTest'` | Passed | `BUILD SUCCESSFUL in 14s`; 48 actionable tasks: 7 executed, 41 up-to-date. |
+| `ANDROID_HOME="$HOME/Android/Sdk" ANDROID_SDK_ROOT="$HOME/Android/Sdk" ./gradlew assembleDebug` | Passed | 真正根因修复后 `BUILD SUCCESSFUL in 9s`; 84 actionable tasks: 11 executed, 73 up-to-date. |
+| 用户独立状态浮层位置 | Passed | 用户确认调整后浮层位置正常。 |
+| 用户原复现环境：启用语音长按后的实体 `w → Space` | Pending | 必须安装本次新构建复验；此前安装包尚未包含 Rime-first 修复。 |
 
 ## Current Errors / Blockers
 
-- None.
-- 环境说明：直接运行 Gradle 会报 `SDK location not found`；本机 Linux SDK 位于 `$HOME/Android/Sdk`，验证命令已显式设置 `ANDROID_HOME` 与 `ANDROID_SDK_ROOT`。
-- Windows Gradle 不能从项目的 WSL UNC 路径启动，曾报 `java.io.IOException: 函数不正确。`；最终验证均使用 Linux SDK 并通过。
-- 设备验证使用 `godot-api36-x86_64` AVD。实体键盘阶段使用默认 PS/2 设备；软键盘阶段临时解绑 AVD 的 `atkbd`，仅改变运行中的模拟器，模拟器随后已关闭。
+- 无实现或自动验证阻塞。
+- 最终完成门禁仅剩用户原设备复验。
 
 ## Decisions / Findings
 
-- 根因不是候选框 UI：`RimeProcessResult.processed == false` 被错误当成“无组合态、允许宿主兜底”，但该返回值不能证明原始输入/候选已消失。
-- 修复所有者是 `RimeEngine.dispatchKey()` 的普通 Space 兜底授权；UI `candidateState` 不参与该决策。
-- 当前工作区已有未提交的 `resolveUnhandledSpace()`、dispatch 恢复逻辑及 `RimeCandidateTest` 用例；检查和验证证明已满足任务目标，因此未追加重构或无关测试。
-- 软键盘与实体键盘均通过实际 `w → Space` 及无组合态 Space 验证，快速输入不依赖 UI 候选传播。
-- 现有 `.supermax/specs/wubi-pinyin-input/spec.md` 已规定 Space 提交第一候选及禁止重复宿主兜底；本任务不改规格。
-- 范围仅覆盖普通 Space 的软/实体输入路径，不扩展到“任何键”，不重构其他组合键语义。
+- 真正根因与用户现象一一对应：
+  1. 启用 STT 后，实体 Space 的 `onKeyDown()` 被长按检测消费；短按在 `onKeyUp()` 调用 `handleKeyPress("space")`。
+  2. 普通五笔拼音路径进入 `handleSoftCompositionKey()`。
+  3. 原代码先读取异步 UI 状态 `candidateState.pendingEnglishText`；该值在模式切换/UI 更新延迟期间可能残留。
+  4. 只要非空，原代码直接 `commitText(" ")` 并在调用 Rime 前返回。
+  5. 因此宿主收到空格，而 Rime 组合态和候选完全未处理，候选框持续显示。
+- 修复原则：Xime 自有英文待处理状态只能作为 Rime 权威 `Unhandled` 后的兜底，不能拥有高于 Rime 组合态的优先级。
+- `resolveUnhandledSpace()` 继续保留为 Rime 已被调用但返回未处理时的第二道保护。
+- KeyUp 所有权不是本问题主因，相关试探性代码已撤回，避免扩大输入事件行为。
+- 独立浮层是候选层的兄弟组件，状态显示/清除不改变候选列表、组合态或候选 UI state。
 
 ## Next Actions
 
-1. None.
+1. 用户安装本次 Debug 包，在语音输入功能开启状态下多次快速执行 `w → Space`。
+2. 同时验证语音功能关闭时、软键盘 Space 和无组合态 Space。
+3. 用户确认后将任务从 `review` 标记为 `done`；若仍复现，再基于此确定路径采集 `pendingEnglishText + Rime dispatch` 日志，不再修改其他路径。
 
 ## Do Not Re-Explore
 
-- 不再讨论是否“任何键”都应选择候选；已确定只有按键各自的既定组合态语义，当前缺陷只涉及普通 Space。
-- 不再重新定位症状所有者；已确定是 `processed=false` 到宿主 Space 的错误授权，不是候选栏渲染问题。
-- 不再提议规格变更；既有规格已完整覆盖目标行为。
-- 不重新设计全局 tri-state/JNI 架构；本任务在现有 `RimeKeyDispatch` 和当前修补上完成闭环。
+- 不再把 `processed=false` 或实体 KeyUp 当作已证实主根因；用户实测已否定。
+- 不再允许 `pendingEnglishText` 在 Rime 派发前提交 Space/Enter。
+- 不再把候选 UI 快照作为宿主兜底依据。
+- 不把瞬时状态重新放入 `InputUIState` 或 `HardwareKeyboardCandidateBar`。
+- 不改五笔/拼音编码、候选排序、Rime JNI 或其他按键产品语义。

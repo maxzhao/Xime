@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kingzcheung.xime.ui.keyboard.KeyboardResizeOverlay
 import com.kingzcheung.xime.ui.keyboard.HardwareKeyboardCandidateBar
+import com.kingzcheung.xime.ui.keyboard.HardwareKeyboardStatusOverlay
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -225,6 +226,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     
     internal val uiState = mutableStateOf(InputUIState())
     internal val candidateState = mutableStateOf(CandidateState())
+    internal val hardwareStatusMessageState = mutableStateOf("")
     private val clipboardItemsState = mutableStateOf<List<com.kingzcheung.xime.clipboard.ClipboardItem>>(emptyList())
     private val voiceAmplitudeState = mutableFloatStateOf(0f)
     private val voiceSpectrumState = mutableStateOf(FloatArray(16))
@@ -1299,28 +1301,34 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                         val selectedTextCol = com.kingzcheung.xime.ui.theme.KeyboardThemes.getCandidateSelectedTextColor(state.themeId, isDark)
                         val keyboardBgColor = cardBg
                         val rootTheme = com.kingzcheung.xime.ui.theme.KeyboardThemes.getThemeById(state.themeId)
-                        if (state.isCompact && (state.hardwareStatusMessage.isNotEmpty() || state.isVoiceMode || cand.candidates.isNotEmpty() || cand.isShowingRecentClipboard || cand.inputText.isNotEmpty())) {
-                            HardwareKeyboardCandidateBar(
-                                inputText = cand.inputText,
-                                preeditText = cand.preeditText,
-                                candidates = cand.candidates,
-                                hasNextPage = cand.hasNextPage,
-                                hasPrevPage = cand.hasPrevPage,
-                                cursorX = state.cursorX,
-                                cursorTopY = state.cursorTopY,
-                                cursorY = state.cursorY,
-                                cursorVisible = state.cursorVisible,
-                                highlightIndex = highlightIndex.intValue,
-                                statusMessage = state.hardwareStatusMessage,
-                                isVoiceMode = state.isVoiceMode,
-                                voicePluginName = state.voicePluginName,
-                                cardBackgroundColor = cardBg,
-                                candidateTextColor = candidateTextCol,
-                                activeColor = accentCol,
-                                selectedTextColor = selectedTextCol,
+                        if (state.isCompact) {
+                            if (state.isVoiceMode || cand.candidates.isNotEmpty() || cand.isShowingRecentClipboard || cand.inputText.isNotEmpty()) {
+                                HardwareKeyboardCandidateBar(
+                                    inputText = cand.inputText,
+                                    preeditText = cand.preeditText,
+                                    candidates = cand.candidates,
+                                    hasNextPage = cand.hasNextPage,
+                                    hasPrevPage = cand.hasPrevPage,
+                                    cursorX = state.cursorX,
+                                    cursorTopY = state.cursorTopY,
+                                    cursorY = state.cursorY,
+                                    cursorVisible = state.cursorVisible,
+                                    highlightIndex = highlightIndex.intValue,
+                                    isVoiceMode = state.isVoiceMode,
+                                    voicePluginName = state.voicePluginName,
+                                    cardBackgroundColor = cardBg,
+                                    candidateTextColor = candidateTextCol,
+                                    activeColor = accentCol,
+                                    selectedTextColor = selectedTextCol,
+                                )
+                            } else {
+                                Box(modifier = Modifier.fillMaxSize())
+                            }
+                            HardwareKeyboardStatusOverlay(
+                                messageState = hardwareStatusMessageState,
+                                backgroundColor = cardBg,
+                                textColor = accentCol,
                             )
-                        } else if (state.isCompact) {
-                            Box(modifier = Modifier.fillMaxSize())
                         } else {
                         // 非浮动：背景与键盘内容同区域，贴底覆盖键盘内容高度 + 底部导航栏留白，
                         // 键盘内容通过 offset 上移 activeBottomDp 留出导航栏空间（对齐参考实现 bottomPaddingSpace）。
@@ -2168,6 +2176,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         mainHandler.removeCallbacks(hardwareSpaceLongPressRunnable)
         hardwareSpacePressActive = false
         hardwareSpaceLongPressTriggered = false
+        hardwareStatusMessageState.value = ""
         closeToolPanel()
         // 输入会话结束：关闭残留的面板页面（表情/符号等 overlay），
         // 避免下次键盘弹出时在候选栏上方渲染上次的面板背景

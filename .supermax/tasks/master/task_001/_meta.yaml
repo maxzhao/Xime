@@ -1,7 +1,7 @@
 name: 修复五笔拼音组合态空格泄漏
 description: 修复 Rime 未处理 Space 但组合态仍存在时错误向宿主输入空格的问题
-status: done
+status: review
 priority: high
 dependencies: []
 created: "2026-09-18T13:25:42.000Z"
-updated: "2026-09-18T13:55:30.000Z"
+updated: "2026-09-19T04:06:17.000Z"

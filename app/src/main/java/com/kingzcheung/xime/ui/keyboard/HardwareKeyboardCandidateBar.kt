@@ -108,7 +108,6 @@ fun HardwareKeyboardCandidateBar(
     cursorY: Int,
     cursorVisible: Boolean,
     highlightIndex: Int,
-    statusMessage: String = "",
     isVoiceMode: Boolean = false,
     voicePluginName: String = "",
     cardBackgroundColor: Color,
@@ -116,7 +115,7 @@ fun HardwareKeyboardCandidateBar(
     activeColor: Color,
     selectedTextColor: Color = activeColor,
 ) {
-    if (candidates.isEmpty() && inputText.isEmpty() && statusMessage.isEmpty() && !isVoiceMode) return
+    if (candidates.isEmpty() && inputText.isEmpty() && !isVoiceMode) return
 
     val density = LocalDensity.current
     val displayText = if (preeditText.isNotEmpty()) preeditText else inputText
@@ -183,18 +182,6 @@ fun HardwareKeyboardCandidateBar(
                     .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 4.dp)
                     .widthIn(max = maxCardWidthDp.dp - 24.dp)
             ) {
-                if (statusMessage.isNotEmpty()) {
-                    Text(
-                        text = statusMessage,
-                        fontSize = 15.sp,
-                        color = activeColor,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                }
-
                 if (isVoiceMode) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),

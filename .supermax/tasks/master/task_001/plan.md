@@ -8,10 +8,11 @@
 ## Scope
 
 - In scope:
-  - 修正 Rime 返回 `processed=false` 但按键前后仍存在组合态时的 Space 兜底判定。
+  - 保留 Rime 返回 `processed=false` 但按键前后仍存在组合态时的 Space 兜底保护。
   - 组合态且已有候选时提交候选索引 0；组合态但候选尚未准备时消费 Space，禁止宿主空格。
-  - 让软键盘 Space 与实体键盘普通 Space 共用同一结果规则。
-  - 保留并完善当前工作区中已有的 `resolveUnhandledSpace`/`dispatchKey` 针对性修补。
+  - 修正 `handleSoftCompositionKey()` 的状态优先级：先向 Rime 派发 Space，再仅在权威 `Unhandled` 时处理 Xime 自有 `pendingEnglishText`。
+  - 让软键盘 Space 与实体键盘普通 Space 共用权威 Rime 结果规则。
+  - 将实体键盘模式/标点/全半角提示从候选框提取为独立 IME 浮层，状态更新不再修改候选 UI 状态。
   - 添加最小回归覆盖并完成针对性 JVM、Debug 构建和设备复现验证。
 - Out of scope:
   - 将“任何键”都改为候选选择键。
@@ -48,22 +49,20 @@
 ## Current Facts
 
 - `ImeKeyRouter.handleSoftCompositionKey()` 将软键盘 `space` 映射为 Rime 空格键；实体键盘普通 Space 也进入 `RimeEngine.dispatchKey()`。两条路径只有收到 `RimeKeyDispatch.Unhandled` 后才应执行宿主空格。
-- 根因已经确定：原实现把 native `RimeProcessResult.processed == false` 等同于“没有组合态，可以宿主兜底”。该布尔值只表示本次 Rime 按键未被消费，并不证明原始输入/候选已经消失；五笔首码候选延迟准备时，按键前后仍可能有组合态。
-- 结果是 Space 被发送给 Android `InputConnection`，而 Rime 组合态未清除，因此出现“空白上屏、候选框持续显示”。
-- 当前未提交工作区已包含针对性候选修补：`RimeEngine.dispatchKey()` 在 native 未处理普通 Space 时读取按键前后组合态，通过 `resolveUnhandledSpace()` 决定选择首候选、消费按键或允许宿主兜底；`RimeCandidateTest.kt` 已有对应纯逻辑用例。该代码属于用户工作，必须保留并在其上完成任务。
-- 现有规格和 `WubiPinyinNativeIntegrationTest` 已表达 `w → Space` 应提交首候选，但设备级用例当前未形成这次缺陷的最终验证证据。
+- 上次两次修补分别覆盖 native `processed=false` 和实体 KeyUp，但用户真机复现证明二者都不是主根因；KeyUp 防御改动已撤回。
+- 真正根因位于 `ImeKeyRouter.handleSoftCompositionKey()`：实体 Space 短按在启用语音长按功能时也会走该软键路径；函数先检查异步 UI 状态 `candidateState.pendingEnglishText`。只要该值非空，就直接向宿主提交空格并在调用 Rime 前返回。
+- `pendingEnglishText` 可在中英文切换或 UI 更新延迟期间残留，而 Rime 已经处于中文组合态并显示候选。因此形成完全一致的结果：空格进入宿主，Rime 没收到 Space，候选框继续显示。
+- `RimeEngine.dispatchKey()` 的 `resolveUnhandledSpace()` 仍是有效的第二道保护，但只有真正调用 Rime 后才生效；修复必须把 Rime 派发放到 `pendingEnglishText` 前面。
+- `hardwareStatusMessage` 当前属于 `InputUIState` 并由 `HardwareKeyboardCandidateBar` 直接渲染；状态显示与清除都会重组候选区域。规格未要求该耦合，用户要求将其拆为独立浮层，且不能依赖 Termux 中不可见的系统 Toast。
 
 ## Approach
 
-1. 以当前 diff 为基线，保留 `RimeEngine.dispatchKey()` 的有序、同锁前后状态读取；不得退回使用 UI 快照判断组合态。
-2. 完成普通 Space 的唯一兜底规则：
-   - native 已处理：原样返回 `Handled`；
-   - native 未处理，且按键前后均无组合态：返回 `Unhandled`，允许既有宿主空格路径；
-   - native 未处理，且按键前或按键后仍有组合态、当前存在候选：在同一 Rime 临界区选择候选索引 0，并返回 `Handled`；
-   - native 未处理，且组合态仍存在但候选尚未准备：返回 `Handled` 并携带当前状态，禁止 U+0020 泄漏。
-3. 核对软键盘 Space 和未修饰实体 Space 均消费上述 `dispatchKey()` 结果；只在发现绕过路径时做最小路由调整。保留 Shift/Ctrl/Alt/Meta 组合键及无组合态宿主行为。
-4. 保留/整理现有最小纯逻辑回归测试，覆盖：有组合态且有候选、组合态但无候选、按键前后均无组合态、非普通 Space 不套用该规则。不要为静态映射或无关按键增加测试。
-5. 运行针对性 JVM 测试与 `assembleDebug`；在 Android 设备上分别验证软键盘和实体键盘的普通速度、紧邻 `w → Space` 输入及无组合态空格。
+1. 保留 `RimeEngine.dispatchKey()` 的有序、同锁 Space 保护；不得退回使用 UI 快照判断组合态。
+2. `handleSoftCompositionKey()` 必须先在有序 key-processing 队列中调用 `RimeEngine.dispatchKey()`；`Handled` 结果直接提交候选并更新 UI，`Unavailable` 不做宿主兜底。
+3. 只有 `RimeKeyDispatch.Unhandled` 才允许读取并处理 `pendingEnglishText` 或发送普通宿主 Space/Enter；残留 UI 状态不得绕过权威 Rime 结果。
+4. 从 `InputUIState` 和 `HardwareKeyboardCandidateBar` 移除状态提示；新增独立 `HardwareKeyboardStatusOverlay`，使用独立 Compose state，并把 state 读取限制在浮层组合域。模式/标点/全半角状态只更新该浮层，不使用系统 Toast。
+5. 添加最小决策测试，覆盖残留 `pendingEnglishText` 在 `Handled`/`Unavailable` 时不能执行宿主兜底，仅 `Unhandled` 可执行；保留现有 Space dispatch 测试。
+6. 运行针对性 JVM 测试与 `assembleDebug`；由用户在原设备验证启用语音长按功能后的实体 `w → Space` 和独立状态浮层。
 
 ## Decisions
 
@@ -81,11 +80,14 @@
 
 ## Affected Paths
 
-- `app/src/main/java/com/kingzcheung/xime/rime/RimeEngine.kt` — 普通 Space 未处理时的权威组合态恢复/兜底决策；预计主要实现所有者。
-- `app/src/main/java/com/kingzcheung/xime/service/ImeKeyRouter.kt` — 仅核对软/硬 Space 对 `Handled`/`Unhandled` 的消费；必要时做窄调整。
-- `app/src/main/java/com/kingzcheung/xime/service/XimeInputMethodService.kt` — 仅核对实体 Space 的 KeyDown/KeyUp 路由，不进行无关重构。
-- `app/src/test/java/com/kingzcheung/xime/rime/RimeCandidateTest.kt` — 最小回归测试。
-- `app/src/test/java/com/kingzcheung/xime/service/KeyCodeMapperTest.kt` — 复用既有普通实体 Space 映射验证；无新增需求时不改。
+- `app/src/main/java/com/kingzcheung/xime/rime/RimeEngine.kt` — 保留普通 Space 未处理时的权威组合态恢复/兜底决策。
+- `app/src/main/java/com/kingzcheung/xime/service/ImeKeyRouter.kt` — Rime 派发优先于 `pendingEnglishText`；状态文案只更新独立浮层。
+- `app/src/main/java/com/kingzcheung/xime/service/XimeInputMethodService.kt` — 挂载并清理独立状态浮层 state。
+- `app/src/main/java/com/kingzcheung/xime/service/InputUIState.kt` — 移除候选 UI 中的瞬时状态字段。
+- `app/src/main/java/com/kingzcheung/xime/ui/keyboard/HardwareKeyboardCandidateBar.kt` — 移除状态提示参数和内容。
+- `app/src/main/java/com/kingzcheung/xime/ui/keyboard/HardwareKeyboardStatusOverlay.kt` — 独立实体键盘状态浮层。
+- `app/src/test/java/com/kingzcheung/xime/rime/RimeCandidateTest.kt` — 保留 Space dispatch 回归测试。
+- `app/src/test/java/com/kingzcheung/xime/service/KeyCodeMapperTest.kt` — 增加按键所有权状态转换测试。
 
 ## Risks And Failure Handling
 
@@ -106,9 +108,10 @@
 - [ ] 快速连续输入 `w → Space` 不依赖候选 UI 刷新时机，结果仍为“人”且无空白泄漏。
 - [ ] Rime 未处理 Space 但按键前后任一状态仍有组合态时，不向宿主发送空格；有候选时选择索引 0，无候选时安全消费。
 - [ ] 按键前后均无组合态时，软键盘和未修饰实体 Space 仍各输入一个普通空格。
-- [ ] 一个 Space 不会同时触发 Rime 提交和宿主空格，也不会重复提交候选。
+- [ ] 一个 Space 不会同时触发 Rime 提交和宿主空格，也不会重复提交候选；残留 `pendingEnglishText` 不能绕过 Rime 组合态。
+- [ ] 右 Shift、`Ctrl+.`、`Shift+Space` 的瞬时状态通过独立 IME 浮层显示，不进入候选卡，也不更新候选 UI state；Termux 等目标不依赖系统 Toast。
 - [ ] 其他按键、候选排序和既有用户工作不被有意改变。
-- [ ] 针对性 JVM 测试和 `./gradlew assembleDebug` 通过；设备验证结果记录在任务 TODO。
+- [ ] 针对性 JVM 测试和 `./gradlew assembleDebug` 通过；设备及用户原复现场景结果记录在任务 TODO。
 
 ## Validation Plan
 
